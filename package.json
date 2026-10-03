@@ -1,0 +1,16 @@
+{
+  "name": "pagewatch",
+  "version": "1.0.0",
+  "description": "网页元素变化监测：点选网页元素，变化时通过飞书/Webhook 通知",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "postinstall": "playwright install chromium"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "playwright": "^1.55.0"
+  }
+}

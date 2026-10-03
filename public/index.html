@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PageWatch 网页监测</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👁</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 登录 -->
+  <div id="login" class="login hidden">
+    <form id="loginForm" class="login-box">
+      <h1>👁 PageWatch</h1>
+      <p class="muted">请输入访问密码</p>
+      <input type="password" name="password" placeholder="密码" autofocus>
+      <button class="btn primary" type="submit">登录</button>
+      <p class="error" id="loginError"></p>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand">👁 PageWatch <span class="muted">网页监测</span></div>
+      <div class="top-actions">
+        <button class="btn" id="btnSettings">⚙️ 通知设置</button>
+        <button class="btn primary" id="btnAdd">＋ 新建监测</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="stats" id="stats"></section>
+
+      <section class="toolbar">
+        <input type="search" id="search" placeholder="搜索名称、网址、备注…">
+        <span class="muted small" id="refreshInfo"></span>
+      </section>
+
+      <section id="list" class="list"></section>
+    </main>
+  </div>
+
+  <!-- 新建/编辑监测 -->
+  <div id="editor" class="modal hidden">
+    <div class="editor">
+      <div class="editor-head">
+        <h2 id="editorTitle">新建监测</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="editor-body">
+        <div class="picker-pane">
+          <form class="urlbar" id="urlForm">
+            <input type="url" id="fUrl" placeholder="粘贴要监测的网址，例如 https://www.blackmagicdesign.com/cn/products/davinciresolve" required>
+            <button class="btn primary" type="submit">加载网页</button>
+          </form>
+          <div class="frame-wrap">
+            <div class="frame-tip" id="frameTip">
+              <div class="big">① 输入网址并加载</div>
+              <div>② 在网页上 <b>点击</b> 你想监测的内容（比如版本号、更新日期、下载按钮）</div>
+              <div>③ 在右边设置判断规则，保存</div>
+            </div>
+            <div class="frame-loading hidden" id="frameLoading"><div class="spinner"></div>正在打开网页，复杂网页可能要十几秒…</div>
+            <iframe id="frame" title="网页预览" class="hidden"></iframe>
+          </div>
+        </div>
+
+        <form class="form-pane" id="monitorForm">
+          <label>名称
+            <input name="name" placeholder="例如：达芬奇 Resolve 最新版本">
+          </label>
+
+          <div class="field">
+            <div class="label-row">监测的元素
+              <button type="button" class="link" id="btnParent" title="选中的范围太小时，扩大到外面一层">⬆ 选父级</button>
+            </div>
+            <textarea name="selector" rows="2" placeholder="在左边网页上点击选择，或手动填写 CSS 选择器" spellcheck="false"></textarea>
+          </div>
+
+          <label>读取内容
+            <select name="attribute">
+              <option value="">元素的文字</option>
+              <option value="href">链接地址（href）</option>
+              <option value="src">图片/文件地址（src）</option>
+              <option value="title">提示文字（title）</option>
+              <option value="datetime">时间（datetime）</option>
+              <option value="content">content 属性</option>
+            </select>
+          </label>
+
+          <div class="preview-box">
+            <div class="label-row">当前读到的内容
+              <button type="button" class="link" id="btnTest">🔄 真实读取测试</button>
+            </div>
+            <div id="previewValue" class="preview-value muted">还没选择元素</div>
+          </div>
+
+          <label>什么时候通知我
+            <select name="rule" id="fRule"></select>
+          </label>
+          <label id="thresholdRow" class="hidden">设定值（数字）
+            <input name="threshold" type="number" step="any" placeholder="例如 100">
+          </label>
+
+          <label>检查间隔
+            <div class="inline">
+              <input name="interval" type="number" min="1" step="1"> <span>分钟</span>
+            </div>
+          </label>
+
+          <label>备注
+            <input name="note" placeholder="例如：更新后上传到官网下载页">
+          </label>
+
+          <div class="checks">
+            <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
+            <label class="check"><input type="checkbox" name="notifyFeishu" checked> 飞书通知</label>
+            <label class="check"><input type="checkbox" name="notifyWebhook" checked> Webhook 通知</label>
+          </div>
+
+          <p class="error" id="formError"></p>
+          <div class="form-actions">
+            <button type="button" class="btn" data-close>取消</button>
+            <button type="submit" class="btn primary">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 详情/历史 -->
+  <div id="detail" class="modal hidden">
+    <div class="dialog">
+      <div class="editor-head">
+        <h2 id="detailTitle">详情</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div id="detailBody" class="dialog-body"></div>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div id="settings" class="modal hidden">
+    <form class="dialog" id="settingsForm">
+      <div class="editor-head">
+        <h2>通知设置</h2>
+        <button type="button" class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="dialog-body">
+        <h3>飞书机器人</h3>
+        <p class="muted small">飞书群 → 设置 → 群机器人 → 添加机器人 → 自定义机器人，复制 Webhook 地址。如果开启了“签名校验”，把密钥也填上。</p>
+        <label>Webhook 地址
+          <input name="feishuWebhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx">
+        </label>
+        <label>签名密钥（可选）
+          <input name="feishuSecret" placeholder="没开签名校验就留空">
+        </label>
+
+        <h3>通用 Webhook</h3>
+        <p class="muted small">有更新时会向这个地址 POST 一段 JSON（包含名称、网址、旧值、新值），可以接你自己网站的接口。</p>
+        <label>Webhook 地址
+          <input name="customWebhook" placeholder="https://你的网站/api/notify">
+        </label>
+
+        <h3>默认值</h3>
+        <label>新建监测的默认检查间隔（分钟）
+          <input name="defaultInterval" type="number" min="1">
+        </label>
+
+        <p class="error" id="settingsError"></p>
+        <p class="ok" id="settingsOk"></p>
+      </div>
+      <div class="form-actions pad">
+        <button type="button" class="btn" id="btnTestNotify">发送测试通知</button>
+        <button type="submit" class="btn primary">保存</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
