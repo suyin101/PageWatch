@@ -14,8 +14,14 @@ const DEFAULT_DB = {
     feishuSecret: '',
     customWebhook: '',
     defaultInterval: 30,
+    // 通知模板，留空表示使用默认模板
+    feishuTitleTemplate: '',
+    feishuTemplate: '',
+    webhookTemplate: '',
   },
   monitors: [],
+  auth: null, // { username, salt, hash }
+  sessions: [], // [{ id: 令牌的 sha256, expires }]
 };
 
 let db = load();
@@ -27,6 +33,8 @@ function load() {
   return {
     settings: { ...DEFAULT_DB.settings, ...raw.settings },
     monitors: raw.monitors || [],
+    auth: raw.auth || null,
+    sessions: (raw.sessions || []).filter((x) => x.expires > Date.now()),
   };
 }
 
@@ -35,6 +43,56 @@ function save() {
   const tmp = DB_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
   fs.renameSync(tmp, DB_FILE);
+}
+
+// ---------- 登录账号 ----------
+const SESSION_DAYS = 30;
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+function hashPassword(password, salt) {
+  return crypto.scryptSync(password, salt, 64).toString('hex');
+}
+
+function hasAccount() {
+  return !!db.auth;
+}
+
+function getUsername() {
+  return db.auth?.username || '';
+}
+
+function setAccount(username, password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  db.auth = { username, salt, hash: hashPassword(password, salt) };
+  db.sessions = []; // 改密码后所有设备都要重新登录
+  save();
+}
+
+function checkPassword(username, password) {
+  if (!db.auth || username !== db.auth.username) return false;
+  const a = Buffer.from(hashPassword(password, db.auth.salt), 'hex');
+  return crypto.timingSafeEqual(a, Buffer.from(db.auth.hash, 'hex'));
+}
+
+// 返回给浏览器的是随机令牌，文件里只存它的哈希
+function createSession() {
+  const token = crypto.randomBytes(32).toString('hex');
+  db.sessions = db.sessions.filter((x) => x.expires > Date.now());
+  db.sessions.push({ id: sha256(token), expires: Date.now() + SESSION_DAYS * 86400_000 });
+  save();
+  return { token, maxAge: SESSION_DAYS * 86400 };
+}
+
+function validSession(token) {
+  if (!token) return false;
+  const id = sha256(token);
+  return db.sessions.some((x) => x.id === id && x.expires > Date.now());
+}
+
+function deleteSession(token) {
+  const id = sha256(token || '');
+  db.sessions = db.sessions.filter((x) => x.id !== id);
+  save();
 }
 
 function getSettings() {
@@ -161,6 +219,13 @@ function pick(obj, keys) {
 }
 
 module.exports = {
+  hasAccount,
+  getUsername,
+  setAccount,
+  checkPassword,
+  createSession,
+  validSession,
+  deleteSession,
   getSettings,
   updateSettings,
   listMonitors,

@@ -23,7 +23,7 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && path !== '/login') {
+  if (res.status === 401 && !['/login', '/setup'].includes(path)) {
     showLogin();
     throw new Error('请先登录');
   }
@@ -82,16 +82,31 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------- 登录 ----------
-function showLogin() {
+// 还没有账号时显示“创建管理员账号”，有账号时显示登录
+let setupMode = false;
+function showLogin(hasAccount = true) {
+  setupMode = !hasAccount;
+  const lf = $('#loginForm');
   $('#app').classList.add('hidden');
   $('#login').classList.remove('hidden');
+  $('#loginHint').textContent = setupMode ? '第一次使用，请创建管理员账号' : '请登录后台';
+  $('#loginBtn').textContent = setupMode ? '创建账号并进入' : '登录';
+  lf.password2.classList.toggle('hidden', !setupMode);
+  lf.password2.required = setupMode;
+  lf.password.autocomplete = setupMode ? 'new-password' : 'current-password';
+  lf.password.placeholder = setupMode ? '密码（至少 6 位）' : '密码';
+  lf.username.focus();
 }
 
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const f = e.target;
+  $('#loginError').textContent = '';
   try {
-    await api('/login', { method: 'POST', body: { password: e.target.password.value } });
-    $('#login').classList.add('hidden');
+    if (setupMode && f.password.value !== f.password2.value) throw new Error('两次输入的密码不一样');
+    const body = { username: f.username.value.trim(), password: f.password.value };
+    await api(setupMode ? '/setup' : '/login', { method: 'POST', body });
+    f.reset();
     boot();
   } catch (err) {
     $('#loginError').textContent = err.message;
@@ -274,10 +289,26 @@ async function openDetail(id) {
 const form = $('#monitorForm');
 const frame = $('#frame');
 
-function setPreview(text, ok = true) {
+function setPreview(text, ok = true, meta = '', metaClass = '') {
   const box = $('#previewValue');
   box.textContent = text;
   box.className = 'preview-value ' + (ok ? 'has' : 'muted');
+  setPreviewMeta(meta, metaClass);
+}
+
+function setPreviewMeta(html, cls = '') {
+  const m = $('#previewMeta');
+  m.innerHTML = html;
+  m.className = 'preview-meta ' + cls;
+}
+
+// 等待时每秒更新一次提示，让人知道还在干活
+function startTimer(onTick) {
+  const started = Date.now();
+  const tick = () => onTick(Math.floor((Date.now() - started) / 1000));
+  tick();
+  const id = setInterval(tick, 1000);
+  return () => clearInterval(id);
 }
 
 function toggleThreshold() {
@@ -308,18 +339,32 @@ function openEditor(m) {
   $('#frameLoading').classList.add('hidden');
   $('#frameTip').classList.remove('hidden');
   openModal('editor');
-  if (m) loadFrame();
+  if (m) loadFrame(false);
   else $('#fUrl').focus();
 }
 window.openEditor = openEditor;
 
-function loadFrame() {
+const LOADING_STEPS = [
+  [0, '正在连接网站…'],
+  [3, '正在等待网页内容加载…'],
+  [8, '这个网站比较慢，再稍等一下…'],
+  [20, '网站响应很慢，最多等 45 秒…'],
+];
+let stopLoadingTimer = () => {};
+
+// fresh=false：编辑时如果这个网页几分钟内打开过，直接用，不再重新加载
+function loadFrame(fresh = true) {
   const url = $('#fUrl').value.trim();
   if (!url) return;
   $('#frameTip').classList.add('hidden');
   $('#frameLoading').classList.remove('hidden');
   frame.classList.add('hidden');
-  frame.src = '/api/snapshot?url=' + encodeURIComponent(url);
+  stopLoadingTimer();
+  stopLoadingTimer = startTimer((sec) => {
+    $('#loadingText').textContent = LOADING_STEPS.filter(([t]) => sec >= t).pop()[1];
+    $('#loadingTime').textContent = sec ? `已用 ${sec} 秒` : '';
+  });
+  frame.src = `/api/snapshot?fresh=${fresh ? 1 : 0}&url=${encodeURIComponent(url)}`;
 }
 
 $('#urlForm').addEventListener('submit', (e) => {
@@ -331,6 +376,7 @@ window.addEventListener('message', (e) => {
   if (e.origin !== location.origin || e.source !== frame.contentWindow) return;
   const d = e.data || {};
   if (d.type === 'pw-loaded') {
+    stopLoadingTimer();
     $('#frameLoading').classList.add('hidden');
     frame.classList.remove('hidden');
     if (d.ok && !form.name.value) {
@@ -361,7 +407,7 @@ function showPickValue() {
   const attr = form.attribute.value;
   const v = attr ? p.attrs[attr] : p.text;
   if (v == null || v === '') setPreview(attr ? `⚠ 这个元素没有 ${attr}，换成“元素的文字”试试，或点“选父级”` : '（这个元素没有文字，可以点“选父级”扩大范围，或改为读取链接地址）', false);
-  else setPreview(v, true);
+  else setPreview(v, true, '这是预览里看到的内容，保存前可以点「真实读取测试」确认后台也能读到');
 }
 
 form.attribute.addEventListener('change', showPickValue);
@@ -385,11 +431,17 @@ $('#btnTest').addEventListener('click', async () => {
   const btn = $('#btnTest');
   btn.disabled = true;
   btn.textContent = '读取中…';
+  const stop = startTimer((sec) =>
+    setPreviewMeta(`<span class="spinner sm"></span>后台正在读取${sec >= 2 ? `，已用 ${sec} 秒（需要重新打开网页时会慢一些）` : '…'}`)
+  );
   try {
     const r = await api('/preview', { method: 'POST', body: { url: $('#fUrl').value.trim(), selector: form.selector.value.trim(), attribute: form.attribute.value } });
-    setPreview(r.value || '（内容为空）', !!r.value);
+    stop();
+    const how = r.live ? '直接读取已打开的网页' : '重新打开网页读取，和定时检查一样';
+    setPreview(r.value || '（内容为空）', !!r.value, `✅ 读取成功 · 用时 ${r.ms < 100 ? '不到 0.1' : (r.ms / 1000).toFixed(1)} 秒（${how}）`, 'ok');
   } catch (err) {
-    setPreview('⚠ ' + err.message, false);
+    stop();
+    setPreview('读取失败', false, '❌ ' + esc(err.message), 'err');
   } finally {
     btn.disabled = false;
     btn.textContent = '🔄 真实读取测试';
@@ -426,59 +478,221 @@ form.addEventListener('submit', async (e) => {
 $('#btnAdd').addEventListener('click', () => openEditor());
 
 // ---------- 设置 ----------
-const sform = $('#settingsForm');
+const channelsForm = $('#channelsForm');
+const templatesForm = $('#templatesForm');
+const accountForm = $('#accountForm');
+
+function panelMsg(panel, text, ok) {
+  const p = panel.closest('.tab-panel');
+  p.querySelector('[data-msg=ok]').textContent = ok ? text : '';
+  p.querySelector('[data-msg=error]').textContent = ok ? '' : text;
+}
+
+function switchTab(name) {
+  for (const b of document.querySelectorAll('#settingsTabs button')) b.classList.toggle('active', b.dataset.tab === name);
+  for (const p of document.querySelectorAll('#settings .tab-panel')) p.classList.toggle('hidden', p.dataset.panel !== name);
+  if (name === 'templates') updateTemplatePreview();
+}
+$('#settingsTabs').addEventListener('click', (e) => e.target.dataset.tab && switchTab(e.target.dataset.tab));
 
 $('#btnSettings').addEventListener('click', async () => {
   state.settings = await api('/settings');
-  for (const k of ['feishuWebhook', 'feishuSecret', 'customWebhook', 'defaultInterval']) sform[k].value = state.settings[k] ?? '';
-  $('#settingsError').textContent = $('#settingsOk').textContent = '';
+  const s = state.settings;
+  for (const k of ['feishuWebhook', 'feishuSecret', 'customWebhook', 'defaultInterval']) channelsForm[k].value = s[k] ?? '';
+  // 模板没改过时显示默认模板，方便在它的基础上修改
+  templatesForm.feishuTitleTemplate.value = s.feishuTitleTemplate || state.defaults.feishuTitleTemplate;
+  templatesForm.feishuTemplate.value = s.feishuTemplate || state.defaults.feishuTemplate;
+  templatesForm.webhookTemplate.value = s.webhookTemplate || '';
+  accountForm.reset();
+  accountForm.username.value = state.username;
+  for (const el of document.querySelectorAll('#settings [data-msg]')) el.textContent = '';
+  switchTab('channels');
   openModal('settings');
 });
 
-function settingsBody() {
+function channelsBody() {
   return {
-    feishuWebhook: sform.feishuWebhook.value.trim(),
-    feishuSecret: sform.feishuSecret.value.trim(),
-    customWebhook: sform.customWebhook.value.trim(),
-    defaultInterval: Number(sform.defaultInterval.value),
+    feishuWebhook: channelsForm.feishuWebhook.value.trim(),
+    feishuSecret: channelsForm.feishuSecret.value.trim(),
+    customWebhook: channelsForm.customWebhook.value.trim(),
+    defaultInterval: Number(channelsForm.defaultInterval.value),
   };
 }
 
-sform.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  try {
-    state.settings = await api('/settings', { method: 'PUT', body: settingsBody() });
-    closeModal('settings');
-    toast('设置已保存');
-  } catch (err) {
-    $('#settingsError').textContent = err.message;
+// 和默认模板一样就存成空，以后默认模板升级了也能自动用上
+function templatesBody() {
+  const v = (k) => templatesForm[k].value.trim();
+  return {
+    feishuTitleTemplate: v('feishuTitleTemplate') === state.defaults.feishuTitleTemplate ? '' : v('feishuTitleTemplate'),
+    feishuTemplate: v('feishuTemplate') === state.defaults.feishuTemplate ? '' : v('feishuTemplate'),
+    webhookTemplate: v('webhookTemplate'),
+  };
+}
+
+async function saveSettings(form) {
+  const body = form === channelsForm ? channelsBody() : templatesBody();
+  state.settings = await api('/settings', { method: 'PUT', body });
+}
+
+for (const f of [channelsForm, templatesForm]) {
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await saveSettings(f);
+      panelMsg(f, '✅ 已保存', true);
+    } catch (err) {
+      panelMsg(f, err.message, false);
+    }
+  });
+}
+
+for (const btn of document.querySelectorAll('[data-test-notify]')) {
+  btn.addEventListener('click', async () => {
+    const f = btn.closest('form');
+    panelMsg(f, '正在发送…', true);
+    try {
+      // 先保存再测试，测的就是当前填写的内容
+      await saveSettings(f);
+      const { results } = await api('/settings/test', { method: 'POST' });
+      const ok = results.filter((r) => r.ok).map((r) => r.channel);
+      const bad = results.filter((r) => !r.ok);
+      if (bad.length) panelMsg(f, bad.map((r) => `❌ ${r.channel}：${r.error}`).join('\n') + (ok.length ? `\n✅ 已发送：${ok.join('、')}` : ''), false);
+      else panelMsg(f, `✅ 已发送到：${ok.join('、')}，去看看收到没有`, true);
+    } catch (err) {
+      panelMsg(f, err.message, false);
+    }
+  });
+}
+
+// --- 模板编辑 ---
+const WEBHOOK_PRESETS = {
+  default: '',
+  wecom: JSON.stringify(
+    {
+      msgtype: 'markdown',
+      markdown: {
+        content: '**🔔 {{名称}} 有更新**\n> 变化：<font color="warning">{{变化}}</font>\n> 现在：{{对比}}\n> 之前：{{旧内容}}\n> 时间：{{时间}}\n[打开网页]({{网址}})',
+      },
+    },
+    null,
+    2
+  ),
+  dingtalk: JSON.stringify(
+    {
+      msgtype: 'markdown',
+      markdown: {
+        title: '{{名称}} 有更新',
+        text: '### 🔔 {{名称}} 有更新\n\n**变化：**{{变化}}\n\n**现在：**{{对比}}\n\n**之前：**{{旧内容}}\n\n**时间：**{{时间}}\n\n[打开网页]({{网址}})',
+      },
+    },
+    null,
+    2
+  ),
+};
+
+let lastTplField = null;
+for (const el of templatesForm.querySelectorAll('[data-tpl]')) {
+  el.addEventListener('focus', () => (lastTplField = el));
+  el.addEventListener('input', schedulePreview);
+}
+
+function renderChips() {
+  $('#varChips').innerHTML = Object.entries(state.variables)
+    .map(([k, d]) => `<button type="button" class="chip" data-var="${esc(k)}" title="${esc(d)}">{{${esc(k)}}}</button>`)
+    .join('');
+}
+
+$('#varChips').addEventListener('click', (e) => {
+  const k = e.target.dataset.var;
+  if (!k) return;
+  const el = lastTplField || templatesForm.feishuTemplate;
+  const text = `{{${k}}}`;
+  const { selectionStart: a = el.value.length, selectionEnd: b = el.value.length } = el;
+  el.value = el.value.slice(0, a) + text + el.value.slice(b);
+  el.focus();
+  el.setSelectionRange(a + text.length, a + text.length);
+  schedulePreview();
+});
+
+templatesForm.addEventListener('click', (e) => {
+  const preset = e.target.dataset.preset;
+  if (preset !== undefined) {
+    templatesForm.webhookTemplate.value = WEBHOOK_PRESETS[preset];
+    schedulePreview();
+  }
+  if (e.target.dataset.reset === 'feishu') {
+    templatesForm.feishuTitleTemplate.value = state.defaults.feishuTitleTemplate;
+    templatesForm.feishuTemplate.value = state.defaults.feishuTemplate;
+    schedulePreview();
   }
 });
 
-$('#btnTestNotify').addEventListener('click', async () => {
-  $('#settingsError').textContent = $('#settingsOk').textContent = '';
+// 把飞书 lark_md 简单转成网页显示（只认我们用到的几种格式）
+function larkToHtml(md) {
+  let s = md.replace(/<font color='(\w+)'>/g, '\u0001$1\u0002').replace(/<\/font>/g, '\u0003');
+  s = s.replace(/</g, '&lt;');
+  s = s.replace(/\u0001(\w+)\u0002/g, '<span class="c-$1">').replace(/\u0003/g, '</span>');
+  return s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/~~(.+?)~~/g, '<s>$1</s>');
+}
+
+let previewTimer;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(updateTemplatePreview, 300);
+}
+
+async function updateTemplatePreview() {
   try {
-    // 先保存再测试，测的就是当前填写的地址
-    state.settings = await api('/settings', { method: 'PUT', body: settingsBody() });
-    const { results } = await api('/settings/test', { method: 'POST' });
-    const ok = results.filter((r) => r.ok).map((r) => r.channel);
-    const bad = results.filter((r) => !r.ok);
-    if (ok.length) $('#settingsOk').textContent = `✅ 已发送：${ok.join('、')}`;
-    if (bad.length) $('#settingsError').textContent = bad.map((r) => `❌ ${r.channel}：${r.error}`).join('\n');
+    const r = await api('/templates/preview', { method: 'POST', body: templatesBody() });
+    $('#pvTitle').textContent = r.feishu.title;
+    $('#pvBody').innerHTML = larkToHtml(r.feishu.body);
+    $('#pvWebhook').textContent = r.webhook.ok ? JSON.stringify(r.webhook.body, null, 2) : '⚠ ' + r.webhook.error;
+    $('#pvWebhook').classList.toggle('err-text', !r.webhook.ok);
   } catch (err) {
-    $('#settingsError').textContent = err.message;
+    $('#pvBody').textContent = '⚠ ' + err.message;
   }
+}
+
+// --- 账号 ---
+accountForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api('/account', {
+      method: 'PUT',
+      body: {
+        username: accountForm.username.value.trim(),
+        currentPassword: accountForm.currentPassword.value,
+        newPassword: accountForm.newPassword.value,
+      },
+    });
+    state.username = r.username;
+    accountForm.currentPassword.value = accountForm.newPassword.value = '';
+    panelMsg(accountForm, '✅ 已保存，其它设备需要重新登录', true);
+  } catch (err) {
+    panelMsg(accountForm, err.message, false);
+  }
+});
+
+$('#btnLogout').addEventListener('click', async () => {
+  await api('/logout', { method: 'POST' }).catch(() => {});
+  location.reload();
 });
 
 // ---------- 启动 ----------
 async function boot() {
   const me = await fetch('/api/me').then((r) => r.json());
-  if (!me.authed) return showLogin();
+  if (!me.authed) return showLogin(me.hasAccount);
+  state.username = me.username;
+  $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
+  $('#btnLogout').title = `退出登录（${me.username}）`;
   const [meta, settings] = await Promise.all([api('/meta'), api('/settings')]);
   state.rules = meta.rules;
+  state.variables = meta.variables;
+  state.defaults = meta.defaults;
   state.settings = settings;
   form.rule.innerHTML = Object.entries(state.rules).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  renderChips();
   refresh();
 }
 

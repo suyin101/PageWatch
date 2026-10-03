@@ -5,6 +5,8 @@ const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const NAV_TIMEOUT = 45_000;
 const SELECTOR_TIMEOUT = 15_000;
+const SESSION_IDLE_MS = 5 * 60_000; // 编辑时打开的网页保留 5 分钟，方便马上试读
+const MAX_SESSIONS = 3;
 
 let browserPromise = null;
 
@@ -18,27 +20,26 @@ async function getBrowser() {
   return browserPromise;
 }
 
-async function withPage(url, fn) {
+// 启动时先把浏览器打开，第一次检查就不用等浏览器启动
+function warmup() {
+  getBrowser().catch((e) => console.error('[浏览器启动失败]', e.message));
+}
+
+async function newContext() {
   const browser = await getBrowser();
-  const context = await browser.newContext({
-    userAgent: UA,
-    locale: 'zh-CN',
-    viewport: { width: 1366, height: 900 },
-  });
-  const page = await context.newPage();
+  return browser.newContext({ userAgent: UA, locale: 'zh-CN', viewport: { width: 1366, height: 900 } });
+}
+
+async function gotoPage(page, url) {
   try {
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
-    } catch (e) {
-      throw new Error(friendlyError(e.message));
-    }
-    // 再等一会儿让异步内容加载完；有些网站一直有请求，所以超时也不算错
-    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-    return await fn(page);
-  } finally {
-    await context.close();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+  } catch (e) {
+    throw new Error(friendlyError(e.message));
   }
 }
+
+// 很多网站会一直在后台发请求，“等所有请求结束”经常要等到超时，所以只短暂等一下
+const settle = (page, ms) => page.waitForLoadState('networkidle', { timeout: ms }).catch(() => {});
 
 function friendlyError(msg) {
   const known = [
@@ -57,65 +58,147 @@ function cleanText(s) {
   return (s || '').replace(/\s+/g, ' ').trim();
 }
 
-// 读取某个元素的内容。attribute 为空时读文字，否则读属性（比如下载链接的 href）
-async function readElement(url, selector, attribute) {
-  return withPage(url, async (page) => {
-    const loc = page.locator(selector).first();
-    try {
-      await loc.waitFor({ state: 'attached', timeout: SELECTOR_TIMEOUT });
-    } catch {
-      throw new Error('在网页上找不到这个元素，可能网页改版了，请重新选择元素');
-    }
-    if (attribute) {
-      const v = await loc.getAttribute(attribute);
-      if (v == null) throw new Error(`元素没有 ${attribute} 属性`);
-      // 链接类属性转成完整网址，方便直接点开
-      if (['href', 'src'].includes(attribute)) {
-        return loc.evaluate((el, a) => el[a] || el.getAttribute(a), attribute);
-      }
-      return cleanText(v);
-    }
-    return cleanText(await loc.evaluate((el) => el.innerText || el.textContent));
-  });
+// 在已经打开的网页里读取元素。attribute 为空时读文字，否则读属性（比如下载链接的 href）
+async function readFromPage(page, selector, attribute, settleMs = 2500) {
+  const loc = page.locator(selector).first();
+  try {
+    await loc.waitFor({ state: 'attached', timeout: SELECTOR_TIMEOUT });
+  } catch {
+    throw new Error('在网页上找不到这个元素，可能网页改版了，请重新选择元素');
+  }
+  // 元素出现后再稍等一下，让 JS 把内容填完整
+  if (settleMs) await settle(page, settleMs);
+  if (attribute) {
+    const v = await loc.getAttribute(attribute);
+    if (v == null) throw new Error(`元素没有 ${attribute} 属性`);
+    // 链接类属性转成完整网址，方便直接点开
+    if (['href', 'src'].includes(attribute)) return loc.evaluate((el, a) => el[a] || el.getAttribute(a), attribute);
+    return cleanText(v);
+  }
+  return cleanText(await loc.evaluate((el) => el.innerText || el.textContent));
 }
 
-// 生成一份“静态快照”给前端点选元素用：去掉网页自己的脚本，只保留样子
-async function snapshot(url) {
-  return withPage(url, async (page) => {
-    // 慢慢滚到底，触发懒加载内容
-    await page.evaluate(async () => {
-      for (let y = 0; y < document.body.scrollHeight && y < 20000; y += 800) {
-        window.scrollTo(0, y);
-        await new Promise((r) => setTimeout(r, 80));
-      }
-      window.scrollTo(0, 0);
-    }).catch(() => {});
-    await page.evaluate(() => {
-      document.querySelectorAll('script, noscript, iframe, object, embed').forEach((el) => el.remove());
-      document.querySelectorAll('meta[http-equiv]').forEach((el) => el.remove());
-      for (const el of document.querySelectorAll('*')) {
-        for (const attr of [...el.attributes]) {
-          if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
+// 定时检查用：不加载图片、视频、字体，只要文字，所以更快
+async function readElement(url, selector, attribute) {
+  const context = await newContext();
+  try {
+    await context.route('**/*', (route) =>
+      ['image', 'media', 'font'].includes(route.request().resourceType()) ? route.abort() : route.continue()
+    );
+    const page = await context.newPage();
+    await gotoPage(page, url);
+    return await readFromPage(page, selector, attribute);
+  } finally {
+    await context.close();
+  }
+}
+
+// ---------- 编辑时用的“实时网页” ----------
+// 点选元素时打开的网页先不关，“真实读取测试”直接在这个网页上读，几乎不用等
+const sessions = new Map(); // url -> { context, page, timer, ready }
+
+function touch(url) {
+  const s = sessions.get(url);
+  if (!s) return;
+  clearTimeout(s.timer);
+  s.timer = setTimeout(() => closeSession(url), SESSION_IDLE_MS);
+}
+
+async function closeSession(url) {
+  const s = sessions.get(url);
+  if (!s) return;
+  sessions.delete(url);
+  clearTimeout(s.timer);
+  await s.context.close().catch(() => {});
+}
+
+async function openSession(url, fresh) {
+  const existing = sessions.get(url);
+  if (existing && !fresh) {
+    await existing.ready;
+    touch(url);
+    return existing.page;
+  }
+  if (existing) await closeSession(url);
+  while (sessions.size >= MAX_SESSIONS) await closeSession(sessions.keys().next().value);
+
+  const context = await newContext();
+  const page = await context.newPage();
+  const ready = (async () => {
+    await gotoPage(page, url);
+    await settle(page, 1500);
+    // 图片不用等：快照里图片由你的浏览器自己去加载。只要 JS 生成的内容出来就行
+    // 快速滚到底，触发懒加载的内容
+    await page
+      .evaluate(async () => {
+        for (let y = 0; y < document.body.scrollHeight && y < 10000; y += 1000) {
+          window.scrollTo(0, y);
+          await new Promise((r) => setTimeout(r, 40));
         }
-      }
-      // 懒加载图片：把 data-src 换成 src，预览更完整
-      document.querySelectorAll('img[data-src]').forEach((img) => {
-        if (!img.getAttribute('src') || img.getAttribute('src').startsWith('data:')) img.src = img.dataset.src;
-      });
-      document.querySelectorAll('base').forEach((el) => el.remove());
-      const base = document.createElement('base');
-      base.href = location.href;
-      document.head.prepend(base);
+        window.scrollTo(0, 0);
+      })
+      .catch(() => {});
+  })();
+  sessions.set(url, { context, page, ready, timer: null });
+  try {
+    await ready;
+  } catch (e) {
+    await closeSession(url);
+    throw e;
+  }
+  touch(url);
+  return page;
+}
+
+// 生成一份“静态快照”给前端点选元素用：复制一份网页，去掉脚本，只保留样子
+async function snapshot(url, { fresh = true } = {}) {
+  const page = await openSession(url, fresh);
+  const html = await page.evaluate(() => {
+    const doc = document.documentElement.cloneNode(true);
+    doc.querySelectorAll('script, noscript, iframe, object, embed, base, meta[http-equiv]').forEach((el) => el.remove());
+    for (const el of doc.querySelectorAll('*')) {
+      for (const attr of [...el.attributes]) if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
+    }
+    // 懒加载图片：把 data-src 换成 src，预览更完整
+    doc.querySelectorAll('img[data-src]').forEach((img) => {
+      const src = img.getAttribute('src');
+      if (!src || src.startsWith('data:')) img.setAttribute('src', img.dataset.src);
     });
-    return { html: await page.content(), finalUrl: page.url() };
+    let head = doc.querySelector('head');
+    if (!head) doc.prepend((head = document.createElement('head')));
+    const base = document.createElement('base');
+    base.href = location.href;
+    head.prepend(base);
+    return '<!DOCTYPE html>' + doc.outerHTML;
   });
+  return { html, finalUrl: page.url() };
+}
+
+// “真实读取测试”：有打开着的网页就直接读，没有就像定时检查一样重新打开
+async function preview(url, selector, attribute) {
+  const started = Date.now();
+  const s = sessions.get(url);
+  if (s) {
+    try {
+      await s.ready;
+      touch(url);
+      const value = await readFromPage(s.page, selector, attribute, 0);
+      return { value, ms: Date.now() - started, live: true };
+    } catch (e) {
+      if (/找不到这个元素|没有 .* 属性/.test(e.message)) throw e;
+      // 网页可能已经坏了，退回到重新打开
+    }
+  }
+  const value = await readElement(url, selector, attribute);
+  return { value, ms: Date.now() - started, live: false };
 }
 
 async function closeBrowser() {
+  for (const url of [...sessions.keys()]) await closeSession(url);
   if (!browserPromise) return;
   const b = await browserPromise.catch(() => null);
   browserPromise = null;
   if (b) await b.close().catch(() => {});
 }
 
-module.exports = { readElement, snapshot, closeBrowser };
+module.exports = { readElement, snapshot, preview, warmup, closeBrowser };

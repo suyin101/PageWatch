@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
+    "reset-password": "node scripts/reset-password.js",
     "postinstall": "playwright install chromium"
   },
   "engines": { "node": ">=18" },

@@ -12,9 +12,11 @@
   <div id="login" class="login hidden">
     <form id="loginForm" class="login-box">
       <h1>👁 PageWatch</h1>
-      <p class="muted">请输入访问密码</p>
-      <input type="password" name="password" placeholder="密码" autofocus>
-      <button class="btn primary" type="submit">登录</button>
+      <p class="muted" id="loginHint">请登录后台</p>
+      <input name="username" placeholder="用户名" autocomplete="username" required>
+      <input type="password" name="password" placeholder="密码" autocomplete="current-password" required>
+      <input type="password" name="password2" placeholder="再输入一次密码" autocomplete="new-password" class="hidden">
+      <button class="btn primary" type="submit" id="loginBtn">登录</button>
       <p class="error" id="loginError"></p>
     </form>
   </div>
@@ -23,8 +25,9 @@
     <header class="topbar">
       <div class="brand">👁 PageWatch <span class="muted">网页监测</span></div>
       <div class="top-actions">
-        <button class="btn" id="btnSettings">⚙️ 通知设置</button>
+        <button class="btn" id="btnSettings">⚙️ 设置</button>
         <button class="btn primary" id="btnAdd">＋ 新建监测</button>
+        <button class="btn ghost" id="btnLogout" title="退出登录">退出</button>
       </div>
     </header>
 
@@ -59,7 +62,7 @@
               <div>② 在网页上 <b>点击</b> 你想监测的内容（比如版本号、更新日期、下载按钮）</div>
               <div>③ 在右边设置判断规则，保存</div>
             </div>
-            <div class="frame-loading hidden" id="frameLoading"><div class="spinner"></div>正在打开网页，复杂网页可能要十几秒…</div>
+            <div class="frame-loading hidden" id="frameLoading"><div class="spinner"></div><div id="loadingText">正在打开网页…</div><div class="small" id="loadingTime"></div></div>
             <iframe id="frame" title="网页预览" class="hidden"></iframe>
           </div>
         </div>
@@ -92,6 +95,7 @@
               <button type="button" class="link" id="btnTest">🔄 真实读取测试</button>
             </div>
             <div id="previewValue" class="preview-value muted">还没选择元素</div>
+            <div id="previewMeta" class="preview-meta"></div>
           </div>
 
           <label>什么时候通知我
@@ -140,40 +144,120 @@
 
   <!-- 设置 -->
   <div id="settings" class="modal hidden">
-    <form class="dialog" id="settingsForm">
+    <div class="dialog wide">
       <div class="editor-head">
-        <h2>通知设置</h2>
+        <h2>设置</h2>
         <button type="button" class="icon-btn" data-close>✕</button>
       </div>
-      <div class="dialog-body">
-        <h3>飞书机器人</h3>
-        <p class="muted small">飞书群 → 设置 → 群机器人 → 添加机器人 → 自定义机器人，复制 Webhook 地址。如果开启了“签名校验”，把密钥也填上。</p>
-        <label>Webhook 地址
-          <input name="feishuWebhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx">
-        </label>
-        <label>签名密钥（可选）
-          <input name="feishuSecret" placeholder="没开签名校验就留空">
-        </label>
+      <nav class="tabs" id="settingsTabs">
+        <button type="button" data-tab="channels" class="active">通知渠道</button>
+        <button type="button" data-tab="templates">通知模板</button>
+        <button type="button" data-tab="account">账号安全</button>
+      </nav>
 
-        <h3>通用 Webhook</h3>
-        <p class="muted small">有更新时会向这个地址 POST 一段 JSON（包含名称、网址、旧值、新值），可以接你自己网站的接口。</p>
-        <label>Webhook 地址
-          <input name="customWebhook" placeholder="https://你的网站/api/notify">
-        </label>
+      <!-- 通知渠道 -->
+      <form class="tab-panel" data-panel="channels" id="channelsForm">
+        <div class="dialog-body">
+          <h3>飞书机器人</h3>
+          <p class="muted small">飞书群 → 设置 → 群机器人 → 添加机器人 → 自定义机器人，复制 Webhook 地址。如果开启了“签名校验”，把密钥也填上。</p>
+          <label>Webhook 地址
+            <input name="feishuWebhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxx">
+          </label>
+          <label>签名密钥（可选）
+            <input name="feishuSecret" placeholder="没开签名校验就留空">
+          </label>
 
-        <h3>默认值</h3>
-        <label>新建监测的默认检查间隔（分钟）
-          <input name="defaultInterval" type="number" min="1">
-        </label>
+          <h3>通用 Webhook</h3>
+          <p class="muted small">有更新时向这个地址发送 POST 请求，可以接你自己网站的接口，也可以接企业微信、钉钉机器人（在“通知模板”里选对应格式）。</p>
+          <label>Webhook 地址
+            <input name="customWebhook" placeholder="https://你的网站/api/notify">
+          </label>
 
-        <p class="error" id="settingsError"></p>
-        <p class="ok" id="settingsOk"></p>
-      </div>
-      <div class="form-actions pad">
-        <button type="button" class="btn" id="btnTestNotify">发送测试通知</button>
-        <button type="submit" class="btn primary">保存</button>
-      </div>
-    </form>
+          <h3>默认值</h3>
+          <label>新建监测的默认检查间隔（分钟）
+            <input name="defaultInterval" type="number" min="1">
+          </label>
+          <p class="error" data-msg="error"></p>
+          <p class="ok" data-msg="ok"></p>
+        </div>
+        <div class="form-actions pad">
+          <button type="button" class="btn" data-test-notify>发送测试通知</button>
+          <button type="submit" class="btn primary">保存</button>
+        </div>
+      </form>
+
+      <!-- 通知模板 -->
+      <form class="tab-panel hidden" data-panel="templates" id="templatesForm">
+        <div class="dialog-body tpl-layout">
+          <div class="tpl-edit">
+            <div class="vars">
+              <div class="small muted">点击插入变量（插到光标位置）：</div>
+              <div id="varChips" class="chips"></div>
+            </div>
+
+            <h3>飞书通知</h3>
+            <label>标题
+              <input name="feishuTitleTemplate" data-tpl>
+            </label>
+            <div class="field">
+              <div class="label-row">正文
+                <span class="small muted">支持 **加粗**；某行的变量都为空时，整行自动隐藏</span>
+              </div>
+              <textarea name="feishuTemplate" rows="8" data-tpl spellcheck="false"></textarea>
+            </div>
+            <button type="button" class="link" data-reset="feishu">↺ 恢复飞书默认模板</button>
+
+            <h3>通用 Webhook 内容</h3>
+            <div class="preset-row">
+              <span class="small muted">格式：</span>
+              <button type="button" class="btn sm" data-preset="default">默认 JSON</button>
+              <button type="button" class="btn sm" data-preset="wecom">企业微信机器人</button>
+              <button type="button" class="btn sm" data-preset="dingtalk">钉钉机器人</button>
+            </div>
+            <textarea name="webhookTemplate" rows="7" data-tpl spellcheck="false" placeholder="留空 = 默认 JSON 格式（包含名称、网址、旧值、新值、变化列表）"></textarea>
+          </div>
+
+          <div class="tpl-preview">
+            <div class="small muted">预览（示例数据）</div>
+            <div class="feishu-card">
+              <div class="feishu-head" id="pvTitle"></div>
+              <div class="feishu-body" id="pvBody"></div>
+              <div class="feishu-btns"><span>打开网页</span></div>
+            </div>
+            <div class="small muted" style="margin-top:14px">Webhook 发送的内容</div>
+            <pre class="json-preview" id="pvWebhook"></pre>
+          </div>
+        </div>
+        <div class="form-actions pad">
+          <p class="error grow" data-msg="error"></p>
+          <p class="ok grow" data-msg="ok"></p>
+          <button type="button" class="btn" data-test-notify>保存并发送测试</button>
+          <button type="submit" class="btn primary">保存</button>
+        </div>
+      </form>
+
+      <!-- 账号 -->
+      <form class="tab-panel hidden" data-panel="account" id="accountForm">
+        <div class="dialog-body">
+          <p class="muted small">修改后，其它已登录的设备都需要重新登录。</p>
+          <label>用户名
+            <input name="username" autocomplete="username">
+          </label>
+          <label>当前密码（必填）
+            <input name="currentPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <label>新密码（不改就留空）
+            <input name="newPassword" type="password" autocomplete="new-password">
+          </label>
+          <p class="error" data-msg="error"></p>
+          <p class="ok" data-msg="ok"></p>
+          <p class="muted small">忘记密码：先停止程序，在项目目录运行 <code>npm run reset-password -- 用户名 新密码</code>，再启动。</p>
+        </div>
+        <div class="form-actions pad">
+          <button type="submit" class="btn primary">保存</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>

@@ -50,7 +50,8 @@
       }
       parts.unshift(segment(node));
       const sel = parts.join(' > ');
-      if (unique(sel)) return sel;
+      // 只有标签名（如 “a”）太容易变，至少再带上一层父元素
+      if (unique(sel) && (parts.length > 1 || parts[0] !== el.tagName.toLowerCase())) return sel;
       node = node.parentElement;
     }
     return parts.join(' > ');
