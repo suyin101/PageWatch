@@ -70,7 +70,7 @@ function checkNewAccount(username, password) {
 }
 
 const wrap = (fn) => (req, res) =>
-  Promise.resolve(fn(req, res)).catch((e) => res.status(400).json({ error: e.message.split('\n')[0] }));
+  Promise.resolve().then(() => fn(req, res)).catch((e) => res.status(400).json({ error: e.message.split('\n')[0] }));
 
 app.get('/api/me', (req, res) =>
   res.json({ authed: isAuthed(req), hasAccount: store.hasAccount(), username: isAuthed(req) ? store.getUsername() : '' })

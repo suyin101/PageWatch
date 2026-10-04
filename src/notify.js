@@ -84,27 +84,49 @@ function withRule(event) {
 }
 
 // 发送通知，返回每个渠道的结果，单个渠道失败不影响其它渠道
+// 发送失败后过多久重试。电脑睡眠、网络断开时发不出去，等一等通常就好了
+const RETRY_DELAYS = [60_000, 5 * 60_000, 15 * 60_000];
+
+function retryLater(channel, send, attempt = 0) {
+  if (attempt >= RETRY_DELAYS.length) {
+    console.error(`[通知失败] ${channel}：重试 ${RETRY_DELAYS.length} 次都没成功，放弃`);
+    return;
+  }
+  setTimeout(async () => {
+    try {
+      await send();
+      console.log(`[通知] ${channel} 第 ${attempt + 1} 次重试发送成功`);
+    } catch (e) {
+      console.error(`[通知失败] ${channel} 第 ${attempt + 1} 次重试：${e.message}`);
+      retryLater(channel, send, attempt + 1);
+    }
+  }, RETRY_DELAYS[attempt]).unref();
+}
+
+// 发送通知，返回每个渠道第一次发送的结果；单个渠道失败不影响其它渠道。
+// 真实的通知发送失败会在后台自动重试；测试通知不重试，直接告诉你结果。
 async function notify(event, settings = store.getSettings()) {
   event = withRule(event);
   const { monitor } = event;
-  const results = [];
+  const channels = [];
   if (settings.feishuWebhook && monitor.notifyFeishu !== false) {
-    try {
-      await sendFeishu(settings.feishuWebhook, settings.feishuSecret, feishuMessage(event, settings));
-      results.push({ channel: '飞书', ok: true });
-    } catch (e) {
-      results.push({ channel: '飞书', ok: false, error: e.message });
-    }
+    // 每次都重新生成消息：飞书签名里带时间戳，过期了会被拒绝
+    channels.push(['飞书', () => sendFeishu(settings.feishuWebhook, settings.feishuSecret, feishuMessage(event, settings))]);
   }
   if (settings.customWebhook && monitor.notifyWebhook !== false) {
+    channels.push(['Webhook', () => postJson(settings.customWebhook, webhookMessage(event, settings))]);
+  }
+  const results = [];
+  for (const [channel, send] of channels) {
     try {
-      await postJson(settings.customWebhook, webhookMessage(event, settings));
-      results.push({ channel: 'Webhook', ok: true });
+      await send();
+      results.push({ channel, ok: true });
     } catch (e) {
-      results.push({ channel: 'Webhook', ok: false, error: e.message });
+      results.push({ channel, ok: false, error: e.message });
+      console.error(`[通知失败] ${channel}: ${e.message}${event.kind === 'test' ? '' : '，稍后自动重试'}`);
+      if (event.kind !== 'test') retryLater(channel, send);
     }
   }
-  for (const r of results) if (!r.ok) console.error(`[通知失败] ${r.channel}: ${r.error}`);
   return results;
 }
 
