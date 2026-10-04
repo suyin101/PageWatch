@@ -1,4 +1,14 @@
 // 用 Playwright 无头浏览器打开网页，这样需要 JS 加载出来的内容也能读到。
+const fs = require('fs');
+const path = require('path');
+
+// 服务器上的安装脚本把浏览器装在项目里（node_modules/playwright-core/.local-browsers）。
+// 发现有的话就用它，不依赖 .env 里的 PLAYWRIGHT_BROWSERS_PATH，免得找到 /root/.cache 去
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  const local = path.join(path.dirname(require.resolve('playwright-core/package.json')), '.local-browsers');
+  if (fs.existsSync(local)) process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
+}
+
 const { chromium } = require('playwright');
 
 const UA =
