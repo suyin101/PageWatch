@@ -7,11 +7,14 @@
   "scripts": {
     "start": "node server.js",
     "reset-password": "node scripts/reset-password.js",
-    "postinstall": "playwright install chromium"
+    "selftest": "node scripts/selftest.js",
+    "pack": "bash scripts/pack.sh"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "express": "^4.21.2",
-    "playwright": "^1.55.0"
+    "playwright": "1.63.0"
   }
 }

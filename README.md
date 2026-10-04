@@ -17,7 +17,8 @@
 
 ```bash
 cd ~/Projects/PageWatch
-npm install        # 第一次运行需要，会自动下载 Chromium 浏览器
+npm install                                  # 第一次运行需要
+npx playwright install --only-shell chromium # 第一次运行需要，下载浏览器
 npm start
 ```
 
@@ -27,22 +28,23 @@ npm start
 
 ## 部署到宝塔面板
 
-1. **上传代码**：把整个项目文件夹（不需要 `node_modules` 和 `data`）上传到服务器，比如 `/www/wwwroot/pagewatch`
-2. **安装 Node.js**：宝塔 → 软件商店 → 安装「Node.js 版本管理器」，装 Node 18 或更新版本
-3. **写配置**：在项目文件夹里把 `.env.example` 复制为 `.env`，**建议填上 `ADMIN_USER` 和 `ADMIN_PASSWORD`**（不填的话，部署好后要马上打开网站自己创建账号，免得被别人抢先）
-4. **安装依赖**：宝塔 → 终端，执行
+需要：Linux 服务器（Ubuntu 22.04 最省事；CentOS 7 不行）、宝塔面板、Node.js 20 或更新、建议 2G 内存。
+安装脚本会自动识别系统，依赖和浏览器全部走国内镜像。
+
+1. **打包**（在 Mac 上）：`npm run pack`，桌面上会生成 `pagewatch.zip`，默认带上你现在的监测、设置和账号（不想带就用 `npm run pack -- --no-data`）
+2. **装 Node.js**：宝塔 → 软件商店 → 搜索安装「Node.js版本管理器」→ 在里面安装 **v20 或 v22**
+3. **上传**：宝塔 → 文件 → 进入 `/www/wwwroot` → 上传 `pagewatch.zip` → 右键解压到 `/www/wwwroot/pagewatch`
+4. **一键安装**：宝塔 → 终端，粘贴运行
    ```bash
-   cd /www/wwwroot/pagewatch
-   npm install
-   npx playwright install-deps chromium   # 安装浏览器需要的系统库（Ubuntu/Debian）
+   cd /www/wwwroot/pagewatch && bash deploy/install.sh
    ```
-   如果是 CentOS 系统，`install-deps` 不支持，请改用 Ubuntu/Debian 系统，或参考 Playwright 文档手动安装依赖。
-5. **添加项目**：宝塔 → 网站 → Node 项目 → 添加 Node 项目
-   - 项目目录：`/www/wwwroot/pagewatch`
-   - 启动选项：`npm start`（或启动文件 `server.js`）
-   - 端口：`3600`（和 `.env` 里一致）
-   - 绑定域名，然后在「SSL」里申请证书开启 HTTPS
-6. 访问你的域名，用管理员账号登录
+   看到「🎉 安装完成」就成功了（大约 3～10 分钟）
+5. **添加项目**：宝塔 → 网站 → Node项目 → 添加Node项目
+   - 项目目录 `/www/wwwroot/pagewatch`，启动选项 `start`，项目端口 `3600`，Node 版本选刚装的 v20/v22
+6. **访问**：
+   - 有已备案的域名：在项目里绑定域名，再到「SSL」申请免费证书
+   - 没有域名：宝塔「安全」和云服务器控制台的「安全组/防火墙」都放行 3600 端口，访问 `http://服务器IP:3600`
+7. **关掉 Mac 上的 PageWatch**，不然两边都会检查、发重复通知
 
 **内存提示**：每次检查会打开一个浏览器页面，建议服务器至少 1GB 内存。内存小的话可以把 `src/checker.js` 里的 `CONCURRENCY` 改成 1。
 
