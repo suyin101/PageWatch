@@ -26,7 +26,9 @@
 
   <div id="app" class="hidden">
     <header class="topbar">
-      <div class="brand">👁 PageWatch <span class="muted">网页监测</span></div>
+      <div class="brand">👁 PageWatch <span class="muted">网页监测</span>
+        <button class="ver-badge" id="verBadge" title="版本更新"></button>
+      </div>
       <div class="top-actions">
         <button class="btn" id="btnSettings">⚙️ 设置</button>
         <button class="btn primary" id="btnAdd">＋ 新建监测</button>
@@ -161,6 +163,7 @@
         <button type="button" data-tab="channels" class="active">通知渠道</button>
         <button type="button" data-tab="templates">通知模板</button>
         <button type="button" data-tab="account">账号安全</button>
+        <button type="button" data-tab="update">版本更新</button>
       </nav>
 
       <!-- 通知渠道 -->
@@ -243,6 +246,26 @@
           <button type="submit" class="btn primary">保存</button>
         </div>
       </form>
+
+      <!-- 版本更新 -->
+      <div class="tab-panel hidden" data-panel="update">
+        <div class="dialog-body">
+          <div class="ver-row">
+            <div>
+              <div class="small muted">当前版本</div>
+              <div class="ver-big" id="curVersion"></div>
+            </div>
+            <button type="button" class="btn" id="btnCheckUpdate">检测更新</button>
+          </div>
+          <div id="updateResult"></div>
+          <div id="updateProgress" class="hidden">
+            <h3 id="progressTitle"></h3>
+            <ol class="steps" id="updateSteps"></ol>
+            <p id="updateMsg" class="small"></p>
+          </div>
+          <div id="rollbackBox" class="rollback"></div>
+        </div>
+      </div>
 
       <!-- 账号 -->
       <form class="tab-panel hidden" data-panel="account" id="accountForm">

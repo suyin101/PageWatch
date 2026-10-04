@@ -19,6 +19,7 @@ const browser = require('./src/browser');
 const { notify, preview: previewTemplates, SAMPLE_EVENT } = require('./src/notify');
 const { RULES } = require('./src/rules');
 const tpl = require('./src/template');
+const updater = require('./src/updater');
 
 const PORT = Number(process.env.PORT) || 3600;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -93,6 +94,7 @@ function bootstrap() {
     authed: true,
     hasAccount: true,
     username: store.getUsername(),
+    version: updater.currentVersion(),
     meta: meta(),
     settings: store.getSettings(),
     monitors: store.listMonitors().map(view),
@@ -291,6 +293,12 @@ app.post(
   })
 );
 
+// ---------- 在线更新 ----------
+app.get('/api/update/check', wrap(async (req, res) => res.json(await updater.check({ force: req.query.force === '1' }))));
+app.get('/api/update/status', (req, res) => res.json({ ...updater.getStatus(), backups: updater.listBackups() }));
+app.post('/api/update/apply', wrap(async (req, res) => res.json(await updater.apply(req.body.version))));
+app.post('/api/update/rollback', wrap(async (req, res) => res.json(await updater.rollback())));
+
 // 给“点选元素”用的网页快照，在 iframe 里显示
 const PICKER_JS = fs.readFileSync(path.join(__dirname, 'src', 'picker.js'), 'utf8');
 
@@ -318,11 +326,14 @@ app.get('/api/snapshot', async (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.listen(PORT, HOST, () => {
-  console.log(`PageWatch 已启动：http://localhost:${PORT}`);
+  console.log(`PageWatch v${updater.currentVersion()} 已启动：http://localhost:${PORT}`);
   if (!store.hasAccount()) console.log('第一次使用：打开上面的地址创建管理员账号');
   browser.warmup();
   checker.start();
 });
+
+// 由启动器运行时：启动器没了（比如被宝塔强制结束），这边也跟着退出，免得占着端口
+if (process.send) process.on('disconnect', () => process.exit(0));
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, async () => {

@@ -547,10 +547,11 @@ function switchTab(name) {
   for (const b of document.querySelectorAll('#settingsTabs button')) b.classList.toggle('active', b.dataset.tab === name);
   for (const p of document.querySelectorAll('#settings .tab-panel')) p.classList.toggle('hidden', p.dataset.panel !== name);
   if (name === 'templates') updateTemplatePreview();
+  if (name === 'update') openUpdateTab();
 }
 $('#settingsTabs').addEventListener('click', (e) => e.target.dataset.tab && switchTab(e.target.dataset.tab));
 
-$('#btnSettings').addEventListener('click', async () => {
+$('#btnSettings').onclickAsync = async () => {
   state.settings = await api('/settings');
   const s = state.settings;
   for (const k of ['feishuWebhook', 'feishuSecret', 'customWebhook', 'defaultInterval']) channelsForm[k].value = s[k] ?? '';
@@ -563,7 +564,8 @@ $('#btnSettings').addEventListener('click', async () => {
   for (const el of document.querySelectorAll('#settings [data-msg]')) el.textContent = '';
   switchTab('channels');
   openModal('settings');
-});
+};
+$('#btnSettings').addEventListener('click', () => $('#btnSettings').onclickAsync());
 
 function channelsBody() {
   return {
@@ -733,6 +735,165 @@ $('#btnLogout').addEventListener('click', async () => {
   location.reload();
 });
 
+// ---------- 版本更新 ----------
+function renderVersionBadge() {
+  const b = $('#verBadge');
+  const u = state.updateInfo;
+  const has = u && u.hasUpdate;
+  b.textContent = has ? `v${state.version} · 有新版本` : `v${state.version}`;
+  b.classList.toggle('has-update', !!has);
+  b.title = has ? `可以更新到 v${u.latest.version}` : '版本更新';
+}
+
+$('#verBadge').addEventListener('click', async () => {
+  await $('#btnSettings').onclickAsync();
+  switchTab('update');
+});
+
+// 更新说明是 GitHub 上的 Markdown，这里只认列表和标题，其它按普通文字显示
+function notesToHtml(md) {
+  const lines = esc(md || '（没有写更新说明）').split(/\r?\n/);
+  let out = '';
+  let inList = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    const item = line.match(/^[-*]\s+(.*)/);
+    if (item && !inList) (out += '<ul>'), (inList = true);
+    if (!item && inList) (out += '</ul>'), (inList = false);
+    if (item) out += `<li>${item[1].replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</li>`;
+    else if (/^#+\s/.test(line)) out += `<div><b>${line.replace(/^#+\s/, '')}</b></div>`;
+    else if (line) out += `<div>${line}</div>`;
+  }
+  return out + (inList ? '</ul>' : '');
+}
+
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString('zh-CN') : '');
+
+function renderUpdateResult(r) {
+  const box = $('#updateResult');
+  if (!r.hasUpdate) {
+    box.innerHTML = `<p class="ok">✅ 已经是最新版本${r.latest ? `（最新发布：v${esc(r.latest.version)}，${fmtDate(r.latest.publishedAt)}）` : ''}</p>`;
+    return;
+  }
+  box.innerHTML =
+    `<h3>发现新版本 v${esc(r.latest.version)}</h3>` +
+    r.newer
+      .map(
+        (rel, i) => `
+      <div class="release ${i === 0 ? 'latest' : ''}">
+        <div class="release-head"><b>v${esc(rel.version)}</b><span class="small muted">${fmtDate(rel.publishedAt)}</span></div>
+        ${notesToHtml(rel.notes)}
+      </div>`
+      )
+      .join('') +
+    `<div class="update-actions">
+      <button type="button" class="btn primary" id="btnApplyUpdate">立即更新到 v${esc(r.latest.version)}</button>
+      <span class="small muted">更新前会自动备份，失败会自动恢复。更新时会短暂重启，大约 10 秒。</span>
+    </div>`;
+  $('#btnApplyUpdate').addEventListener('click', () => startUpdate(r.latest.version));
+}
+
+function renderRollback(backups) {
+  const box = $('#rollbackBox');
+  if (!backups || !backups.length) return (box.innerHTML = '');
+  const b = backups[0];
+  box.innerHTML = `<div class="small muted">新版本有问题？可以回到更新前的版本（备份于 ${fullTime(b.at)}）</div>
+    <div class="update-actions"><button type="button" class="btn sm" id="btnRollback">↩ 回退到 v${esc(b.version)}</button></div>`;
+  $('#btnRollback').addEventListener('click', async () => {
+    if (!confirm(`确定回退到 v${b.version} 吗？程序会短暂重启。`)) return;
+    try {
+      const s = await api('/update/rollback', { method: 'POST' });
+      watchUpdate(s);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+}
+
+async function openUpdateTab() {
+  $('#curVersion').textContent = 'v' + state.version;
+  const s = await api('/update/status').catch(() => null);
+  if (s && s.state === 'running') return watchUpdate(s);
+  $('#updateProgress').classList.add('hidden');
+  renderRollback(s && s.backups);
+  if (state.updateInfo) renderUpdateResult(state.updateInfo);
+  else checkUpdate(false);
+}
+
+async function checkUpdate(force = true) {
+  const btn = $('#btnCheckUpdate');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner sm dark"></span>检测中…';
+  try {
+    state.updateInfo = await api('/update/check' + (force ? '?force=1' : ''));
+    renderUpdateResult(state.updateInfo);
+    renderVersionBadge();
+  } catch (err) {
+    $('#updateResult').innerHTML = `<p class="error">❌ ${esc(err.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '检测更新';
+  }
+}
+$('#btnCheckUpdate').addEventListener('click', () => checkUpdate(true));
+
+async function startUpdate(version) {
+  if (!confirm(`确定更新到 v${version} 吗？更新时程序会短暂重启。`)) return;
+  try {
+    const s = await api('/update/apply', { method: 'POST', body: { version } });
+    watchUpdate(s);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function renderSteps(s) {
+  $('#progressTitle').textContent = s.rollback ? `正在回退到 v${s.to}` : `正在更新：v${s.from} → v${s.to}`;
+  $('#updateSteps').innerHTML = s.steps
+    .map((name, i) => {
+      let cls = '';
+      let mark = '·';
+      if (i < s.step || s.state === 'done') (cls = 'done'), (mark = '✓');
+      if (i === s.step && s.state === 'running') (cls = 'active'), (mark = '<span class="spinner sm dark"></span>');
+      if (i === s.step && s.state === 'error') (cls = 'fail'), (mark = '✗');
+      return `<li class="${cls}"><span class="mark">${mark}</span>${name}</li>`;
+    })
+    .join('');
+  const msg = $('#updateMsg');
+  msg.textContent = s.message || '';
+  msg.className = 'small ' + (s.state === 'error' ? 'err-text' : s.state === 'done' ? 'ok' : 'muted');
+}
+
+// 盯着更新进度；程序重启后，等新版本起来就刷新页面
+async function watchUpdate(s) {
+  $('#updateResult').innerHTML = '';
+  $('#rollbackBox').innerHTML = '';
+  $('#updateProgress').classList.remove('hidden');
+  $('#btnCheckUpdate').disabled = true;
+  while (s.state === 'running') {
+    renderSteps(s);
+    await new Promise((r) => setTimeout(r, 1000));
+    s = await api('/update/status').catch(() => s);
+  }
+  renderSteps(s);
+  $('#btnCheckUpdate').disabled = false;
+  if (s.state !== 'done' || s.needsManualRestart) return;
+
+  const target = s.to;
+  const started = Date.now();
+  while (Date.now() - started < 90_000) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const data = await fetch('/api/bootstrap').then((r) => r.json()).catch(() => null);
+    if (data && data.version === target) {
+      $('#updateMsg').textContent = `✅ 已经是 v${target} 了，正在刷新页面…`;
+      setTimeout(() => location.reload(), 1500);
+      return;
+    }
+  }
+  $('#updateMsg').textContent = '重启时间有点长。如果过一会儿还是打不开，请到宝塔 → Node项目 → 点「重启」';
+  $('#updateMsg').className = 'small err-text';
+}
+
 // ---------- 启动 ----------
 // 数据都准备好、界面画好以后再显示，避免先看到空白
 function showApp(data) {
@@ -747,6 +908,15 @@ function showApp(data) {
   render();
   $('#refreshInfo').textContent = `自动刷新 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
   $('#btnLogout').title = `退出登录（${data.username}）`;
+  state.version = data.version;
+  renderVersionBadge();
+  // 后台悄悄检查一下有没有新版本，有的话在版本号上提示
+  api('/update/check')
+    .then((r) => {
+      state.updateInfo = r;
+      renderVersionBadge();
+    })
+    .catch(() => {});
   $('#splash').classList.add('hidden');
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');

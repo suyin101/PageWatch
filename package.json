@@ -5,10 +5,11 @@
   "main": "server.js",
   "private": true,
   "scripts": {
-    "start": "node server.js",
+    "start": "node launcher.js",
     "reset-password": "node scripts/reset-password.js",
     "selftest": "node scripts/selftest.js",
-    "pack": "bash scripts/pack.sh"
+    "pack": "bash scripts/pack.sh",
+    "release": "bash scripts/release.sh"
   },
   "engines": {
     "node": ">=20"

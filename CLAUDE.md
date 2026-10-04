@@ -1,6 +1,6 @@
 # PageWatch
 
-网页元素变化监测工具。用来监测软件官网更新，好及时在自己网站上传新版本。计划部署到宝塔面板。
+网页元素变化监测工具，主要用来监测软件官网更新。界面和文档都是中文。部署在宝塔面板（国内服务器）。
 
 ## 结构
 - `server.js` — Express 服务 + 全部 API，读取 `.env`。登录必需：账号（scrypt）和会话（只存令牌哈希）在 db.json；第一次访问走 `/api/setup`；同 IP 输错 5 次锁 10 分钟
@@ -11,8 +11,15 @@
 - `src/checker.js` — 每 20 秒扫一次到期的监测，并发 2
 - `src/template.js` — 按词 LCS 对比新旧内容 + `{{中文变量}}` 模板；feishu（lark_md）和 plain 两种输出格式
 - `src/notify.js` — 飞书卡片（支持签名）和通用 Webhook，都按模板生成；出错通知固定格式
+- `launcher.js` — `npm start` 的入口，用子进程跑 server.js：退出码 99 立即重启（在线更新用），崩溃自动重启；子进程通过 ipc 断开感知启动器被杀
+- `src/updater.js` — 在线更新：GitHub Releases（默认 suyin101/PageWatch）→ 下载（失败换加速镜像，仅在有官方 sha256 指纹时）→ 校验 → 解压 → 备份到 .update/backups → 覆盖 → 依赖变了才 npm install → exit(99)。失败自动恢复
 - `scripts/reset-password.js` — 忘记密码时用（需先停服务）
 - `public/` — 无构建步骤的原生 HTML/CSS/JS 前端
+
+## 发布新版本
+- 在 CHANGELOG.md 写好 `## vX.Y.Z — 日期` 一节，然后 `npm run release -- X.Y.Z`（改版本号、提交、打标签、git archive 打包 + sha256、推送、gh release create）
+- 版本号：新功能加中间位，修 bug 加末位
+- 服务器在国内，GitHub 可能慢；更新包要小，别把大文件提交进仓库
 
 ## 约定
 - 状态 `updated` 会一直保留，直到用户点“已处理”（`/ack`）

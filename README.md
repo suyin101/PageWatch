@@ -48,6 +48,10 @@ npm start
 
 ## 以后更新到新版本
 
+**v1.4.0 起支持在线更新**：设置 → 版本更新 → 检测更新 → 立即更新。更新前自动备份，失败自动恢复，也能一键回退。新版本发布在 [GitHub Releases](https://github.com/suyin101/PageWatch/releases)，每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)。
+
+手动更新（比如从 v1.4.0 以前的版本升级上来）：
+
 1. Mac 上运行 `npm run pack`（不带数据，不会覆盖服务器上的监测和设置）
 2. 宝塔 → 文件 → 上传 `pagewatch.zip` 到项目目录 → 解压，提示覆盖时选覆盖
 3. 宝塔终端：`cd 项目目录 && bash deploy/update.sh`
