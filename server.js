@@ -335,6 +335,9 @@ app.post(
   wrap((req, res) => res.json(store.importData(store.readBackup(req.params.name), 'replace')))
 );
 
+// 快照里元素的编号（data-pw-i），不是数字就当没有
+const pwiOf = (b) => (/^\d+$/.test(String(b.pwi ?? '')) ? Number(b.pwi) : null);
+
 // 预览网页里的“浏览网页”模式：在后台真实网页上点一下，返回点完后的网址
 app.post(
   '/api/browse/click',
@@ -342,7 +345,17 @@ app.post(
     const b = req.body;
     validate({ url: b.url, selector: b.selector }, false);
     const href = /^https?:\/\//i.test(b.href || '') ? b.href : '';
-    res.json({ url: await browser.clickInSession(b.url, b.selector, href) });
+    res.json({ url: await browser.clickInSession(b.url, b.selector, href, pwiOf(b)) });
+  })
+);
+
+// 选好元素后，到后台真实网页里核对，返回在真实网页上算出的选择器
+app.post(
+  '/api/browse/locate',
+  wrap(async (req, res) => {
+    const b = req.body;
+    validate({ url: b.url, selector: b.selector }, false);
+    res.json((await browser.locate(b.url, b.selector, pwiOf(b))) || { unknown: true });
   })
 );
 
@@ -358,7 +371,7 @@ app.post('/api/update/apply', wrap(async (req, res) => res.json(await updater.ap
 app.post('/api/update/rollback', wrap(async (req, res) => res.json(await updater.rollback())));
 
 // 给“点选元素”用的网页快照，在 iframe 里显示
-const PICKER_JS = fs.readFileSync(path.join(__dirname, 'src', 'picker.js'), 'utf8');
+const PICKER_JS = ['selector.js', 'picker.js'].map((f) => fs.readFileSync(path.join(__dirname, 'src', f), 'utf8')).join('\n');
 
 app.get('/api/snapshot', async (req, res) => {
   const nonce = crypto.randomBytes(16).toString('base64');

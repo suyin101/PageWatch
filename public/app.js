@@ -495,8 +495,38 @@ $('#btnBack').addEventListener('click', () => {
   if (!prev) return;
   $('#fUrl').value = prev;
   $('#btnBack').disabled = !state.navStack.length;
+  clearPicks();
   loadFrame(false);
 });
+
+// 换了一个网页，之前选的元素属于上一个网页，清掉，免得保存了一个在新网页上找不到的元素
+function clearPicks() {
+  if (!form.selector.value && !form.downloadSelector.value) return;
+  form.selector.value = '';
+  form.downloadSelector.value = '';
+  state.lastPick = null;
+  showDownload(null);
+  setPreview('已进入新页面。切到「🎯 选择元素」，在网页上点一下要监测的内容', false);
+}
+
+// 在快照上选好元素后，到后台真实网页里核对一下，换成在真实网页上算出的选择器（更准）
+async function verifyPick(d, field) {
+  const url = $('#fUrl').value.trim();
+  try {
+    const r = await api('/browse/locate', { method: 'POST', body: { url, selector: d.selector, pwi: d.pwi } });
+    if (r.unknown || field.value !== d.selector) return; // 没法核对，或者已经又选了别的
+    if (r.found) {
+      field.value = r.selector;
+      if (field === form.selector && state.lastPick === d) d.selector = r.selector;
+    } else if (field === form.selector) {
+      setPreviewMeta('⚠ 后台打开的网页里找不到这个元素（网页可能刚变过）。点「加载网页」重新加载后再选一次', 'err');
+    } else {
+      showDownload(null);
+      $('#downloadPreview').className = 'preview-meta err';
+      $('#downloadPreview').textContent = '⚠ 后台打开的网页里找不到这个按钮，点「加载网页」重新加载后再选一次';
+    }
+  } catch {}
+}
 
 async function browseClick(d) {
   const from = $('#fUrl').value.trim();
@@ -505,10 +535,11 @@ async function browseClick(d) {
   $('#loadingText').textContent = d.text ? `正在点击「${d.text}」…` : '正在点击…';
   $('#loadingTime').textContent = '';
   try {
-    const r = await api('/browse/click', { method: 'POST', body: { url: from, selector: d.selector, href: d.href } });
+    const r = await api('/browse/click', { method: 'POST', body: { url: from, selector: d.selector, href: d.href, pwi: d.pwi } });
     if (r.url !== from) {
       state.navStack.push(from);
       $('#fUrl').value = r.url;
+      clearPicks();
     } else {
       toast('网址没变。如果要监测的内容是点了以后才出现的，定时检查时可能读不到，保存前请点「真实读取测试」确认');
     }
@@ -543,6 +574,7 @@ window.addEventListener('message', (e) => {
     form.downloadSelector.value = d.selector;
     setPickTarget('main');
     showDownload(d.link || d.attrs.href, { tried: true });
+    verifyPick(d, form.downloadSelector);
   } else if (d.type === 'pw-pick') {
     state.lastPick = d;
     form.selector.value = d.selector;
@@ -550,8 +582,9 @@ window.addEventListener('message', (e) => {
     if (!d.text && d.attrs.href) form.attribute.value = 'href';
     else if (!d.text && d.attrs.src) form.attribute.value = 'src';
     showPickValue();
+    verifyPick(d, form.selector);
   } else if (d.type === 'pw-highlight-result') {
-    if (!d.found) setPreview('⚠ 在网页上找不到这个选择器', false);
+    if (!d.found) setPreview('⚠ 这个页面上找不到之前选的元素，请在网页上重新点一下要监测的内容', false);
     else {
       state.lastPick = null;
       setPreview(d.text + (d.count > 1 ? `\n\n（匹配到 ${d.count} 个元素，只会读取第一个）` : ''), true, '', '', d.text);
@@ -1059,19 +1092,23 @@ function renderRollback(backups) {
 }
 
 // 更新日志：项目里的 CHANGELOG.md，按“## v1.2.3 — 日期”分成一个个版本
+function parseChangelog(text) {
+  return text
+    .split(/^## /m)
+    .slice(1)
+    .map((sec) => {
+      const [head, ...body] = sec.split(/\r?\n/);
+      const [, version = head, date = ''] = head.match(/^v?([\d.]+)\s*(?:[—-]+\s*(.*))?/) || [];
+      return { version, date, notes: body.join('\n').trim() };
+    });
+}
+
 async function renderChangelog() {
   const box = $('#changelogBox');
   if (box.dataset.loaded) return;
   try {
     const { text } = await api('/changelog');
-    const releases = text
-      .split(/^## /m)
-      .slice(1)
-      .map((sec) => {
-        const [head, ...body] = sec.split(/\r?\n/);
-        const [, version = head, date = ''] = head.match(/^v?([\d.]+)\s*(?:[—-]+\s*(.*))?/) || [];
-        return { version, date, notes: body.join('\n').trim() };
-      });
+    const releases = parseChangelog(text);
     box.innerHTML =
       '<h3>更新日志</h3>' +
       releases
@@ -1145,32 +1182,77 @@ function renderSteps(s) {
 }
 
 // 盯着更新进度；程序重启后，等新版本起来就刷新页面
+// 进度条：每一步开始时的百分比。下载占大头，按实际下载的字节数走；重启后等新版本起来算最后一段
+const STEP_PCT = [0, 55, 60, 68, 76, 84, 92];
+const fmtMB = (n) => (n / 1048576).toFixed(n < 10485760 ? 2 : 1) + ' MB';
+
+function setProgress(pct, text, cls = '') {
+  const fill = $('#pbarFill');
+  fill.style.width = Math.max(2, Math.min(100, pct)) + '%';
+  fill.className = 'pbar-fill ' + cls;
+  $('#pbarText').textContent = `${Math.round(pct)}%　${text}`;
+}
+
+function updateProgress(s) {
+  if (s.state === 'error') return setProgress(STEP_PCT[s.step || 0] + 2, '更新没有完成', 'fail');
+  if (s.state === 'done') return setProgress(92, '新版本已装好，正在重启…');
+  const step = s.step || 0;
+  let pct = STEP_PCT[step];
+  let text = (s.steps[step] || '') + '…';
+  if (step === 0 && s.downloaded) {
+    pct = s.total ? (s.downloaded / s.total) * 55 : Math.min(50, s.downloaded / 20480);
+    text = `正在下载新版本　${fmtMB(s.downloaded)}${s.total ? ' / ' + fmtMB(s.total) : ''}`;
+  }
+  setProgress(pct, text);
+}
+
+// 盯着更新进度；程序重启后，等新版本起来就提示成功并刷新页面
 async function watchUpdate(s) {
   $('#updateResult').innerHTML = '';
   $('#rollbackBox').innerHTML = '';
   $('#updateProgress').classList.remove('hidden');
   $('#btnCheckUpdate').disabled = true;
+  const stopTimer = startTimer((sec) => ($('#pbarTime').textContent = `已用 ${sec} 秒`));
   while (s.state === 'running') {
     renderSteps(s);
-    await new Promise((r) => setTimeout(r, 1000));
+    updateProgress(s);
+    await new Promise((r) => setTimeout(r, 800));
     s = await api('/update/status').catch(() => s);
   }
   renderSteps(s);
+  updateProgress(s);
   $('#btnCheckUpdate').disabled = false;
-  if (s.state !== 'done' || s.needsManualRestart) return;
+  if (s.state !== 'done') return stopTimer();
+  if (s.needsManualRestart) {
+    stopTimer();
+    return setProgress(95, '新版本已装好，请到宝塔 → Node项目 → 点「重启」');
+  }
 
   const target = s.to;
   const started = Date.now();
   while (Date.now() - started < 90_000) {
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 1500));
+    const waited = Math.round((Date.now() - started) / 1000);
+    setProgress(92 + Math.min(7, waited / 3), `正在重启，等待新版本启动…（${waited} 秒）`);
     const data = await fetch('/api/bootstrap').then((r) => r.json()).catch(() => null);
     if (data && data.version === target) {
-      $('#updateMsg').textContent = `✅ 已经是 v${target} 了，正在刷新页面…`;
-      setTimeout(() => location.reload(), 1500);
+      stopTimer();
+      setProgress(100, s.rollback ? `回退成功，现在是 v${target}` : `更新成功！现在是 v${target}`, 'ok');
+      $('#updateMsg').textContent = '正在刷新页面…';
+      $('#updateMsg').className = 'small ok';
+      toast(s.rollback ? `✅ 已回退到 v${target}` : `🎉 更新成功，已经是 v${target}`);
+      if (!s.rollback) {
+        try {
+          localStorage.setItem('pw-just-updated', target);
+        } catch {}
+      }
+      setTimeout(() => location.reload(), 2000);
       return;
     }
   }
-  $('#updateMsg').textContent = '重启时间有点长。如果过一会儿还是打不开，请到宝塔 → Node项目 → 点「重启」';
+  stopTimer();
+  setProgress(95, '重启时间有点长', 'fail');
+  $('#updateMsg').textContent = '如果过一会儿还是打不开，请到宝塔 → Node项目 → 点「重启」';
   $('#updateMsg').className = 'small err-text';
 }
 
@@ -1209,13 +1291,29 @@ function showApp(data) {
 // 刚更新到新版本时，自动打开「版本更新」，让人看到这次更新了什么
 function showWhatsNew() {
   let seen = null;
+  let just = null;
   try {
     seen = localStorage.getItem('pw-seen-version');
+    just = localStorage.getItem('pw-just-updated');
     localStorage.setItem('pw-seen-version', state.version);
+    localStorage.removeItem('pw-just-updated');
   } catch {}
-  if (seen && seen !== state.version) {
-    toast(`已更新到 v${state.version}，下面是这次的更新内容`);
-    $('#verBadge').click();
+  if (just === state.version || (seen && seen !== state.version)) openWhatsNew();
+}
+
+// 弹窗显示当前版本的更新内容
+async function openWhatsNew() {
+  $('#whatsNewTitle').textContent = `🎉 更新成功，现在是 v${state.version}`;
+  $('#whatsNewBody').innerHTML = '<p class="muted">正在读取更新内容…</p>';
+  openModal('whatsNew');
+  try {
+    const rel = parseChangelog((await api('/changelog')).text).find((r) => r.version === state.version);
+    $('#whatsNewBody').innerHTML =
+      `<div class="release-head"><b>这次更新了什么</b><span class="small muted">${esc(rel?.date || '')}</span></div>` +
+      notesToHtml(rel?.notes) +
+      '<p class="small muted">以后想再看：设置 → 版本更新 → 更新日志</p>';
+  } catch {
+    $('#whatsNewBody').innerHTML = '<p class="muted">更新内容可以在 设置 → 版本更新 里查看</p>';
   }
 }
 

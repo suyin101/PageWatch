@@ -119,14 +119,25 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-async function download(url, { allowMirrors }) {
+// onProgress(已下载字节, 总字节)：给页面显示下载进度用，总大小未知时为 0
+async function download(url, { allowMirrors, onProgress }) {
   const candidates = ['', ...(allowMirrors ? MIRRORS : [])];
   const errors = [];
   for (const prefix of candidates) {
     try {
       const res = await fetch(prefix + url, { headers: { 'User-Agent': 'PageWatch-Updater' }, signal: AbortSignal.timeout(90_000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return Buffer.from(await res.arrayBuffer());
+      if (!onProgress) return Buffer.from(await res.arrayBuffer());
+      const total = Number(res.headers.get('content-length')) || 0;
+      const chunks = [];
+      let got = 0;
+      onProgress(0, total);
+      for await (const chunk of res.body) {
+        chunks.push(chunk);
+        got += chunk.length;
+        onProgress(got, total);
+      }
+      return Buffer.concat(chunks);
     } catch (e) {
       errors.push(`${prefix || '直连 GitHub'}：${e.message}`);
       if (prefix === '' && candidates.length > 1) setStep(0, '直连 GitHub 下载失败，换加速地址重试…');
@@ -253,7 +264,10 @@ async function doApply(rel) {
       // 指纹只从 GitHub 直连获取，不经过加速地址
       expected = (await download(rel.asset.sumUrl, { allowMirrors: false })).toString().trim().split(/\s+/)[0];
     }
-    const file = await download(rel.asset.url, { allowMirrors: !!expected });
+    const file = await download(rel.asset.url, {
+      allowMirrors: !!expected,
+      onProgress: (got, total) => (status = { ...status, downloaded: got, total }),
+    });
 
     // 2. 校验
     setStep(1);

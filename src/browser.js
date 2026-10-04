@@ -189,7 +189,18 @@ async function openSession(url, fresh) {
 async function snapshot(url, { fresh = true } = {}) {
   const page = await openSession(url, fresh);
   const html = await page.evaluate(() => {
+    // 给真实网页里每个元素编个号，快照里也带着。这样在快照上点到哪个，后台就能准确找到同一个元素
+    let n = window.__pwNext || 0;
+    for (const el of document.querySelectorAll('*')) if (!el.hasAttribute('data-pw-i')) el.setAttribute('data-pw-i', n++);
+    window.__pwNext = n;
+
     const doc = document.documentElement.cloneNode(true);
+    // 很多网站用 onload 事件让样式表生效（先 media=print 或 rel=preload，加载完再切换），去掉 onload 前先切换好
+    for (const link of doc.querySelectorAll('link[onload]')) {
+      const js = link.getAttribute('onload');
+      if (link.media === 'print' && /media/.test(js)) link.media = 'all';
+      if (link.rel === 'preload' && link.getAttribute('as') === 'style') link.rel = 'stylesheet';
+    }
     doc.querySelectorAll('script, noscript, iframe, object, embed, base, meta[http-equiv]').forEach((el) => el.remove());
     for (const el of doc.querySelectorAll('*')) {
       for (const attr of [...el.attributes]) if (attr.name.startsWith('on')) el.removeAttribute(attr.name);
@@ -211,7 +222,7 @@ async function snapshot(url, { fresh = true } = {}) {
 
 // “浏览网页”模式：在真实网页上点一下（链接、按钮、标签页都行），等网页反应完，返回现在的网址。
 // 网址变了的话，这个打开着的网页就改记在新网址名下，前端接着用新网址取快照
-async function clickInSession(url, selector, href) {
+async function clickInSession(url, selector, href, pwi) {
   const page = await openSession(url, false);
   const context = page.context();
   // 原本在新窗口打开的链接，改成在当前网页打开
@@ -232,10 +243,18 @@ async function clickInSession(url, selector, href) {
     };
   });
 
-  const loc = page.locator(selector).first();
-  let clicked = await loc.click({ timeout: 5000 }).then(() => true, () => false);
+  // 优先按编号找（快照上点的就是它），找不到再按选择器找
+  let loc = null;
+  for (const sel of [pwi != null && `[data-pw-i="${Number(pwi)}"]`, selector].filter(Boolean)) {
+    const l = page.locator(sel).first();
+    if (await l.count().catch(() => 0)) {
+      loc = l;
+      break;
+    }
+  }
+  let clicked = !!loc && (await loc.click({ timeout: 5000 }).then(() => true, () => false));
   // 元素被挡住或看不见时，直接用 JS 点
-  if (!clicked) clicked = await loc.evaluate((el) => (el.click(), true), null, { timeout: 3000 }).catch(() => false);
+  if (loc && !clicked) clicked = await loc.evaluate((el) => (el.click(), true), null, { timeout: 3000 }).catch(() => false);
 
   if (!clicked) {
     cleanup();
@@ -267,6 +286,30 @@ async function clickInSession(url, selector, href) {
   return now;
 }
 
+// 在快照上选好元素后，到后台真实网页里核对一遍：按编号找到同一个元素，用真实网页重新生成选择器。
+// 快照去掉了脚本、iframe，网页自己的 JS 也可能又改过内容，快照里算的选择器在真实网页上不一定对得上。
+// 没有打开着的网页时返回 null（没法核对）
+const SELECTOR_JS = fs.readFileSync(path.join(__dirname, 'selector.js'), 'utf8');
+
+async function locate(url, selector, pwi) {
+  const s = sessions.get(url);
+  if (!s) return null;
+  await s.ready;
+  touch(url);
+  const check = ({ selector, pwi }) => {
+    const { cssPath, text } = window.PWSelector;
+    const el = pwi != null ? document.querySelector(`[data-pw-i="${Number(pwi)}"]`) : null;
+    if (el) return { found: true, selector: cssPath(el), text: text(el).slice(0, 500) };
+    let first = null;
+    try {
+      first = document.querySelector(selector);
+    } catch {}
+    return { found: !!first, selector, text: first ? text(first).slice(0, 500) : '' };
+  };
+  // 用字符串执行：不受网站自己的安全策略（CSP）限制
+  return s.page.evaluate(`${SELECTOR_JS}\n(${check})(${JSON.stringify({ selector, pwi })})`);
+}
+
 // “真实读取测试”：有打开着的网页就直接读，没有就像定时检查一样重新打开
 async function preview(url, selector, attribute, { downloadSelector } = {}) {
   const started = Date.now();
@@ -295,4 +338,4 @@ async function closeBrowser() {
   if (b) await b.close().catch(() => {});
 }
 
-module.exports = { readElement, snapshot, preview, clickInSession, warmup, closeBrowser };
+module.exports = { readElement, snapshot, preview, clickInSession, locate, warmup, closeBrowser };

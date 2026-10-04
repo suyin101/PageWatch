@@ -351,3 +351,9 @@ a.btn, label.btn { display: inline-block; text-decoration: none; margin: 0; font
 .changelog h3 { margin: 0 0 10px; }
 .release.current { border-color: var(--primary); }
 .release .tag { font-size: 12px; color: var(--primary); margin-left: 6px; font-weight: 500; }
+/* 更新进度条 */
+.pbar { height: 10px; border-radius: 999px; background: var(--line); overflow: hidden; margin: 10px 0 6px; }
+.pbar-fill { height: 100%; width: 0; background: var(--primary); border-radius: 999px; transition: width .6s ease; }
+.pbar-fill.ok { background: var(--ok); }
+.pbar-fill.fail { background: var(--error); }
+.pbar-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
