@@ -44,7 +44,14 @@ async function gotoPage(page, url) {
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
   } catch (e) {
-    throw new Error(friendlyError(e.message));
+    // 连接偶尔被网站掐断（防火墙、网络抖动），隔一秒再试一次
+    if (!/ERR_(CONNECTION_(RESET|CLOSED)|EMPTY_RESPONSE|HTTP2_PROTOCOL_ERROR|NETWORK_CHANGED)/.test(e.message)) throw new Error(friendlyError(e.message));
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    } catch (e2) {
+      throw new Error(friendlyError(e2.message));
+    }
   }
 }
 
@@ -108,17 +115,37 @@ async function readDownload(page, selector) {
   }
 }
 
+// 广告、统计脚本：和网页内容无关，还会让网页迟迟“加载不完”，后台打开时直接拦掉
+const JUNK_HOSTS =
+  /(^|\.)(googlesyndication|doubleclick|google-analytics|googletagmanager|googletagservices|googleadservices|adservice\.google|fundingchoicesmessages\.google|hm\.baidu|cnzz|umeng|51\.la|clarity\.ms|hotjar|facebook\.net|connect\.facebook)\.|^pos\.baidu\.com$/;
+
+// 不用下载的请求：图片、视频、字体，以及广告统计
+function isJunk(req) {
+  if (['image', 'media', 'font'].includes(req.resourceType())) return true;
+  try {
+    return JUNK_HOSTS.test(new URL(req.url()).hostname);
+  } catch {
+    return false;
+  }
+}
+
 // 定时检查用：不加载图片、视频、字体，只要文字，所以更快。
 // 返回 { raw: 元素内容, downloadUrl: 下载链接或 null }
 async function readElement(url, selector, attribute, { downloadSelector } = {}) {
   const context = await newContext();
   try {
-    await context.route('**/*', (route) =>
-      ['image', 'media', 'font'].includes(route.request().resourceType()) ? route.abort() : route.continue()
-    );
+    await context.route('**/*', (route) => (isJunk(route.request()) ? route.abort() : route.continue()));
     const page = await context.newPage();
     await gotoPage(page, url);
-    const raw = await readFromPage(page, selector, attribute);
+    let raw;
+    try {
+      raw = await readFromPage(page, selector, attribute);
+    } catch (e) {
+      // 有的网站偶尔不给内容（比如 B 站有时会返回反爬虫页面），刷新再试一次
+      if (!/找不到这个元素/.test(e.message)) throw e;
+      await gotoPage(page, url);
+      raw = await readFromPage(page, selector, attribute);
+    }
     return { raw, downloadUrl: await readDownload(page, downloadSelector) };
   } finally {
     await context.close();
@@ -127,7 +154,24 @@ async function readElement(url, selector, attribute, { downloadSelector } = {}) 
 
 // ---------- 编辑时用的“实时网页” ----------
 // 点选元素时打开的网页先不关，“真实读取测试”直接在这个网页上读，几乎不用等
-const sessions = new Map(); // url -> { context, page, timer, ready }
+const sessions = new Map(); // url -> { page, css, timer, ready }
+
+// 编辑用的网页都开在同一个浏览器环境里，共用缓存：同一个网站点进下一页、重新加载时，脚本和样式不用再下载。
+// 注意不能用 context.route 拦请求（Playwright 一用 route 就关掉缓存），改用浏览器自带的“屏蔽网址”
+let editContextPromise = null;
+async function editContext() {
+  const c = editContextPromise && (await editContextPromise.catch(() => null));
+  if (c && c.browser()?.isConnected()) return c;
+  editContextPromise = newContext();
+  return editContextPromise;
+}
+
+const BLANK_GIF = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const BLOCK_PATTERNS = [
+  ...['woff', 'woff2', 'ttf', 'otf', 'eot', 'mp4', 'webm', 'm3u8', 'mp3', 'flv'].flatMap((e) => [`*.${e}`, `*.${e}?*`, `*.${e}@*`]),
+  ...['googlesyndication.com', 'doubleclick.net', 'google-analytics.com', 'googletagmanager.com', 'googletagservices.com', 'googleadservices.com',
+    'fundingchoicesmessages.google.com', 'hm.baidu.com', 'pos.baidu.com', 'cnzz.com', 'umeng.com', '51.la', 'clarity.ms', 'hotjar.com', 'facebook.net'].map((h) => `*://*${h}/*`),
+];
 
 function touch(url) {
   const s = sessions.get(url);
@@ -141,7 +185,7 @@ async function closeSession(url) {
   if (!s) return;
   sessions.delete(url);
   clearTimeout(s.timer);
-  await s.context.close().catch(() => {});
+  await s.page.close().catch(() => {});
 }
 
 // 等 JS 生成的内容出来，再快速滚到底触发懒加载。图片不用等：快照里图片由你的浏览器自己去加载
@@ -158,6 +202,62 @@ async function prime(page) {
     .catch(() => {});
 }
 
+// 后台打开编辑用的网页：不下载图片（用透明小图代替）、视频、字体和广告统计，网页更快“加载完”。快照里的图片由你的浏览器自己加载。
+// 样式表照常下载，并且记下内容，生成快照时直接嵌进去，你的浏览器就不用再去网站下载
+// （有的网站会拒绝别处来的样式表请求，快照就没有样式了）
+async function newSessionPage() {
+  const context = await editContext();
+  const page = await context.newPage();
+  try {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Network.enable');
+    await cdp.send('Network.setBlockedURLs', { urls: BLOCK_PATTERNS });
+    // 图片不真的下载，直接回一张 1 像素的透明图：网页以为图片加载成功了。
+    // 直接屏蔽的话，有的网站（比如 B 站）会以为图片坏了，把封面换成“什么都没有”
+    cdp.on('Fetch.requestPaused', ({ requestId }) =>
+      cdp
+        .send('Fetch.fulfillRequest', {
+          requestId,
+          responseCode: 200,
+          responseHeaders: [
+            { name: 'Content-Type', value: 'image/gif' },
+            { name: 'Cache-Control', value: 'no-store' },
+          ],
+          body: BLANK_GIF,
+        })
+        .catch(() => {})
+    );
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Image', requestStage: 'Request' }] });
+  } catch {} // 屏蔽不了也能用，只是慢一点
+  const css = new Map(); // 样式表网址 -> Promise<内容>
+  page.on('response', (res) => {
+    if (res.request().resourceType() !== 'stylesheet' || !res.ok()) return;
+    const text = res.text().catch(() => null);
+    css.set(res.url(), text);
+    const from = res.request().redirectedFrom();
+    if (from) css.set(from.url(), text);
+  });
+  return { page, css };
+}
+
+// 样式表里的相对地址（背景图、@import 等）换成完整网址，嵌进快照后才找得到
+function absolutizeCss(text, base) {
+  return text.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (m, q, u) => {
+    if (/^(data:|#)/i.test(u)) return m;
+    try {
+      return `url("${new URL(u, base).href}")`;
+    } catch {
+      return m;
+    }
+  }).replace(/@import\s+(['"])([^'"]+)\1/g, (m, q, u) => {
+    try {
+      return `@import "${new URL(u, base).href}"`;
+    } catch {
+      return m;
+    }
+  });
+}
+
 async function openSession(url, fresh) {
   const existing = sessions.get(url);
   if (existing && !fresh) {
@@ -168,27 +268,45 @@ async function openSession(url, fresh) {
   if (existing) await closeSession(url);
   while (sessions.size >= MAX_SESSIONS) await closeSession(sessions.keys().next().value);
 
-  const context = await newContext();
-  const page = await context.newPage();
+  const { page, css } = await newSessionPage();
   const ready = (async () => {
     await gotoPage(page, url);
     await prime(page);
   })();
-  sessions.set(url, { context, page, ready, timer: null });
+  sessions.set(url, { page, css, ready, timer: null });
   try {
     await ready;
   } catch (e) {
     await closeSession(url);
     throw e;
   }
-  touch(url);
+  // 网页自己跳转了（比如 http 跳到 https、B 站 /video 跳到 /upload/video），改记在跳转后的网址下，
+  // 前端也会换成这个网址，定时检查直接打开它，更稳
+  const final = page.url();
+  if (final !== url && /^https?:/.test(final) && sessions.get(url)?.page === page) {
+    if (sessions.has(final)) await closeSession(final);
+    const s = sessions.get(url);
+    sessions.delete(url);
+    sessions.set(final, s);
+    touch(final);
+  } else touch(url);
   return page;
 }
 
 // 生成一份“静态快照”给前端点选元素用：复制一份网页，去掉脚本，只保留样子
 async function snapshot(url, { fresh = true } = {}) {
   const page = await openSession(url, fresh);
-  const html = await page.evaluate(() => {
+  // 记下的样式表内容（只要快照用得到的，太大的不嵌，免得快照太大）
+  const s = [...sessions.values()].find((x) => x.page === page);
+  const styles = {};
+  let total = 0;
+  for (const [href, p] of s ? s.css : []) {
+    const text = await p;
+    if (text == null || total + text.length > 3_000_000) continue;
+    total += text.length;
+    styles[href] = absolutizeCss(text, href).replace(/<\/style/gi, '<\\/style');
+  }
+  const html = await page.evaluate((styles) => {
     // 给真实网页里每个元素编个号，快照里也带着。这样在快照上点到哪个，后台就能准确找到同一个元素
     let n = window.__pwNext || 0;
     for (const el of document.querySelectorAll('*')) if (!el.hasAttribute('data-pw-i')) el.setAttribute('data-pw-i', n++);
@@ -200,6 +318,15 @@ async function snapshot(url, { fresh = true } = {}) {
       const js = link.getAttribute('onload');
       if (link.media === 'print' && /media/.test(js)) link.media = 'all';
       if (link.rel === 'preload' && link.getAttribute('as') === 'style') link.rel = 'stylesheet';
+    }
+    // 样式表换成后台已经下载好的内容
+    for (const link of doc.querySelectorAll('link[rel~="stylesheet"]')) {
+      const text = styles[link.href];
+      if (text == null) continue;
+      const style = document.createElement('style');
+      if (link.media) style.media = link.media;
+      style.textContent = text;
+      link.replaceWith(style);
     }
     doc.querySelectorAll('script, noscript, iframe, object, embed, base, meta[http-equiv]').forEach((el) => el.remove());
     for (const el of doc.querySelectorAll('*')) {
@@ -215,8 +342,13 @@ async function snapshot(url, { fresh = true } = {}) {
     const base = document.createElement('base');
     base.href = location.href;
     head.prepend(base);
+    // 不告诉图片网站“从哪个网页来的”：很多网站（比如 B 站）的图片会拒绝别的网站来的请求
+    const ref = document.createElement('meta');
+    ref.name = 'referrer';
+    ref.content = 'no-referrer';
+    head.prepend(ref);
     return '<!DOCTYPE html>' + doc.outerHTML;
-  });
+  }, styles);
   return { html, finalUrl: page.url() };
 }
 
@@ -232,7 +364,7 @@ async function clickInSession(url, selector, href, pwi) {
   let cleanup = () => {};
   const reaction = new Promise((resolve) => {
     const onNav = (f) => f === page.mainFrame() && resolve({ nav: true });
-    const onPopup = (p) => resolve({ popup: p });
+    const onPopup = async (p) => (await p.opener()) === page && resolve({ popup: p });
     page.on('framenavigated', onNav);
     context.on('page', onPopup);
     const timer = setTimeout(() => resolve({}), 2000);
@@ -332,6 +464,8 @@ async function preview(url, selector, attribute, { downloadSelector } = {}) {
 
 async function closeBrowser() {
   for (const url of [...sessions.keys()]) await closeSession(url);
+  if (editContextPromise) await (await editContextPromise.catch(() => null))?.close().catch(() => {});
+  editContextPromise = null;
   if (!browserPromise) return;
   const b = await browserPromise.catch(() => null);
   browserPromise = null;

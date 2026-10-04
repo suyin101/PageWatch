@@ -28,6 +28,15 @@
 
   function cssPath(el) {
     if (el.id && !unstable(el.id) && unique('#' + esc(el.id))) return '#' + esc(el.id);
+    // 带 class 的元素，如果网页上第一个同类元素就是它，直接用最短的写法（读取时本来就只读第一个匹配的）。
+    // 比如列表里第一条视频的标题，写成 div.video-title 就行，网页结构小改也不受影响
+    const classes = [...el.classList].filter((c) => !unstable(c)).slice(0, 2);
+    if (classes.length) {
+      const short = el.tagName.toLowerCase() + classes.map((c) => '.' + esc(c)).join('');
+      try {
+        if (document.querySelector(short) === el) return short;
+      } catch {}
+    }
     const parts = [];
     let node = el;
     while (node && node.nodeType === 1 && node !== document.documentElement) {

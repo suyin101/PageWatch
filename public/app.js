@@ -470,6 +470,15 @@ $('#urlForm').addEventListener('submit', (e) => {
   loadFrame();
 });
 
+// 粘贴网址后直接开始加载，不用再点按钮
+$('#fUrl').addEventListener('paste', () =>
+  setTimeout(() => {
+    if (!/^https?:\/\/\S+$/i.test($('#fUrl').value.trim())) return;
+    state.navStack = [];
+    loadFrame();
+  })
+);
+
 // ---------- 选择元素 / 浏览网页 ----------
 // 浏览模式下点网页，是在后台真实的网页上点（进入链接、切换标签页都行），点完再显示新的样子
 const MODE_HINTS = {
@@ -540,6 +549,9 @@ async function browseClick(d) {
       state.navStack.push(from);
       $('#fUrl').value = r.url;
       clearPicks();
+      const host = (u) => new URL(u).hostname.replace(/^www\./, '');
+      if (host(r.url) !== host(from))
+        toast(`已跳到另一个网站（${host(r.url)}）。如果不是你想去的页面（比如点到了广告），按「← 返回」`);
     } else {
       toast('网址没变。如果要监测的内容是点了以后才出现的，定时检查时可能读不到，保存前请点「真实读取测试」确认');
     }
@@ -561,6 +573,13 @@ window.addEventListener('message', (e) => {
     frame.classList.remove('hidden');
     $('#modeBar').classList.toggle('hidden', !d.ok);
     if (d.ok) setFrameMode(state.frameMode);
+    // 网页自己跳转了的话（快照里记着跳转后的网址），换成跳转后的网址，定时检查直接打开它
+    if (d.ok) {
+      try {
+        const real = frame.contentDocument.baseURI;
+        if (/^https?:/.test(real) && real !== $('#fUrl').value.trim()) $('#fUrl').value = real;
+      } catch {}
+    }
     // 名称没填，或还是之前自动填的网页标题（浏览到了别的页面），就换成现在网页的标题
     if (d.ok && (!form.name.value || form.name.value === state.autoName)) {
       try {

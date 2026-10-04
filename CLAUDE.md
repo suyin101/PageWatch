@@ -5,7 +5,7 @@
 ## 结构
 - `server.js` — Express 服务 + 全部 API，读取 `.env`。登录必需：账号（scrypt）和会话（只存令牌哈希）在 db.json；第一次访问走 `/api/setup`；同 IP 输错 5 次锁 10 分钟
 - `src/store.js` — JSON 文件存储（`data/db.json`），故意不用数据库，免得宝塔上编译原生模块
-- `src/browser.js` — Playwright Chromium：`readElement`（定时检查，屏蔽图片/字体）；`snapshot` 打开的网页会保留 5 分钟（sessions），`preview` 直接在上面读，几乎零等待。不要再等 networkidle 到超时，那是之前慢的主因
+- `src/browser.js` — Playwright Chromium：`readElement`（定时检查，屏蔽图片/字体）；`snapshot` 打开的网页会保留 5 分钟（sessions），`preview` 直接在上面读，几乎零等待。不要再等 networkidle 到超时，那是之前慢的主因。编辑用的网页共用一个 context（editContext）以利用 HTTP 缓存——**不能用 context.route**（Playwright 会关掉缓存），用 CDP `Network.setBlockedURLs` 屏蔽字体/视频/广告，CDP `Fetch` 只拦图片回 1 像素 gif（直接屏蔽会让 B 站等网站以为图片坏了）。样式表内容在后台记下并内联进快照；快照加 `referrer=no-referrer` 防盗链。网页自己跳转后 session 改记到最终网址，前端读快照 baseURI 换网址
 - `src/picker.js` — 注入快照里的点选脚本，通过 postMessage 与面板通信；`/api/snapshot` 用 CSP nonce 只允许它执行。两种模式：pick 选元素；browse 把点击发给 `/api/browse/click`，由 `clickInSession` 在后台真实网页上点（处理跳转/新窗口/弹窗），网址变了就把 session 改记到新网址下，前端再用新网址 `fresh=0` 取快照，并清掉上一页选的元素
 - `src/selector.js` — 生成 CSS 选择器，快照（和 picker.js 一起注入）和后台真实网页（`locate`，用字符串 evaluate 绕开网站 CSP）共用。`snapshot` 会给真实网页每个元素打 `data-pw-i` 编号，快照里带着；点选后 `/api/browse/locate` 按编号在真实网页里重新生成选择器，浏览点击也优先按编号找
 - `src/extract.js` — 「只看哪部分」提取（版本号/数字/正则），UMD 写法，服务器和网页（/extract.js）共用同一份
