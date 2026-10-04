@@ -66,7 +66,8 @@ fi
 grep -q '^PLAYWRIGHT_BROWSERS_PATH=' .env || printf '\n# 浏览器装在项目目录里（安装脚本自动添加）\nPLAYWRIGHT_BROWSERS_PATH=0\n' >> .env
 mkdir -p data
 # 宝塔的 Node 项目默认用 www 用户运行，让它能读写项目文件
-id www >/dev/null 2>&1 && chown -R www:www "$APP_DIR"
+# 宝塔网站目录里的 .user.ini 被锁定（防跨站），改不了归属，忽略它即可
+id www >/dev/null 2>&1 && { chown -R www:www "$APP_DIR" 2>/dev/null || true; }
 node scripts/selftest.js https://www.baidu.com || fail "浏览器自检失败，把上面的输出发给我看看"
 
 PORT=$(grep -E '^PORT=' .env | cut -d= -f2); PORT=${PORT:-3600}
