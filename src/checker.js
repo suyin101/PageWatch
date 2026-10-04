@@ -2,6 +2,7 @@
 const store = require('./store');
 const { readElement } = require('./browser');
 const { evaluate } = require('./rules');
+const { extract } = require('./extract');
 const { notify } = require('./notify');
 
 const TICK_MS = 20_000;
@@ -39,12 +40,16 @@ async function checkMonitor(id, { silent = false } = {}) {
   const previous = m.lastValue;
   const startedAt = Date.now();
   try {
-    const value = await readElement(m.url, m.selector, m.attribute);
+    const { raw, downloadUrl } = await readElement(m.url, m.selector, m.attribute, { downloadSelector: m.downloadSelector });
+    // 只取出关键部分（比如版本号）来比较
+    const value = extract(raw, m.extract, m.extractPattern);
     const { triggered } = evaluate(m, value, previous);
     failures.delete(id);
     retryAt.delete(id);
-    const updated = store.recordCheck(id, { value, triggered });
-    if (triggered && !silent) await notify({ kind: 'updated', monitor: updated, oldValue: previous, newValue: value });
+    const updated = store.recordCheck(id, { value, raw, downloadUrl, triggered });
+    if (triggered && !silent) {
+      await notify({ kind: 'updated', monitor: updated, oldValue: previous, newValue: value, raw, downloadUrl });
+    }
     return { ok: true, value, triggered, monitor: updated };
   } catch (e) {
     const msg = e.message.split('\n')[0];

@@ -68,6 +68,7 @@
               <div>③ 在右边设置判断规则，保存</div>
             </div>
             <div class="frame-loading hidden" id="frameLoading"><div class="spinner"></div><div id="loadingText">正在打开网页…</div><div class="small" id="loadingTime"></div></div>
+            <div class="pick-banner hidden" id="pickBanner">👆 请在网页上点击 <b>下载按钮</b>　<button type="button" class="link" id="btnCancelPick">取消</button></div>
             <iframe id="frame" title="网页预览" class="hidden"></iframe>
           </div>
         </div>
@@ -100,7 +101,24 @@
               <button type="button" class="link" id="btnTest">🔄 真实读取测试</button>
             </div>
             <div id="previewValue" class="preview-value muted">还没选择元素</div>
+            <div id="extractedRow" class="extracted hidden">用来比较：<b id="extractedValue"></b></div>
             <div id="previewMeta" class="preview-meta"></div>
+          </div>
+
+          <label>只看哪部分
+            <select name="extract" id="fExtract"></select>
+          </label>
+          <div id="extractHint" class="hint hidden"></div>
+          <label id="patternRow" class="hidden">正则表达式 <span class="small muted">（有括号时只取括号里的部分）</span>
+            <input name="extractPattern" placeholder="例如：最新版\s*([\d.]+)" spellcheck="false">
+          </label>
+
+          <div class="field">
+            <div class="label-row">下载按钮（可选）
+              <button type="button" class="link" id="btnPickDownload">🎯 在网页上选择</button>
+            </div>
+            <input name="downloadSelector" placeholder="选好后，有更新时通知里会带上下载链接" spellcheck="false">
+            <div id="downloadPreview" class="preview-meta"></div>
           </div>
 
           <label>什么时候通知我
@@ -163,6 +181,7 @@
         <button type="button" data-tab="channels" class="active">通知渠道</button>
         <button type="button" data-tab="templates">通知模板</button>
         <button type="button" data-tab="account">账号安全</button>
+        <button type="button" data-tab="backup">数据备份</button>
         <button type="button" data-tab="update">版本更新</button>
       </nav>
 
@@ -247,6 +266,25 @@
         </div>
       </form>
 
+      <!-- 数据备份 -->
+      <div class="tab-panel hidden" data-panel="backup">
+        <div class="dialog-body">
+          <h3>导出 / 导入</h3>
+          <p class="muted small">备份文件包含所有监测、变化历史和通知设置，不含登录账号。可以存到电脑上，也可以用来搬到另一台服务器。</p>
+          <div class="update-actions">
+            <a class="btn" href="/api/backups/export" download>⬇ 导出备份</a>
+            <label class="btn">⬆ 导入备份<input type="file" accept=".json,application/json" id="importFile" hidden></label>
+          </div>
+          <div id="importChoice" class="hint hidden"></div>
+          <p class="error" data-msg="error"></p>
+          <p class="ok" data-msg="ok"></p>
+
+          <h3>自动备份</h3>
+          <p class="muted small">每天自动备份一次，保留最近 7 天；导入或恢复之前，也会先自动存一份当前的数据。</p>
+          <ul class="backup-list" id="backupList"></ul>
+        </div>
+      </div>
+
       <!-- 版本更新 -->
       <div class="tab-panel hidden" data-panel="update">
         <div class="dialog-body">
@@ -293,6 +331,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="extract.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

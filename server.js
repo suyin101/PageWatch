@@ -20,6 +20,7 @@ const { notify, preview: previewTemplates, SAMPLE_EVENT } = require('./src/notif
 const { RULES } = require('./src/rules');
 const tpl = require('./src/template');
 const updater = require('./src/updater');
+const extractor = require('./src/extract');
 
 const PORT = Number(process.env.PORT) || 3600;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -33,7 +34,12 @@ if (!store.hasAccount() && process.env.ADMIN_USER && process.env.ADMIN_PASSWORD)
 const app = express();
 app.set('trust proxy', true);
 app.use(compression()); // 网页文件和数据压缩后再传，打开更快
-app.use(express.json({ limit: '1mb' }));
+// 导入备份的文件可能比较大，单独放宽
+const jsonSmall = express.json({ limit: '1mb' });
+app.use((req, res, next) => (req.path === '/api/backups/import' ? next() : jsonSmall(req, res, next)));
+
+// 提取规则的代码网页上也要用，保证编辑时看到的和实际检查一致
+app.get('/extract.js', (req, res) => res.type('js').sendFile(path.join(__dirname, 'src', 'extract.js')));
 
 // ---------- 登录 ----------
 const COOKIE = 'pw_session';
@@ -83,6 +89,7 @@ function view(m) {
 function meta() {
   return {
     rules: RULES,
+    extractModes: extractor.MODES,
     variables: tpl.VARIABLES,
     defaults: { feishuTitleTemplate: tpl.DEFAULT_FEISHU_TITLE, feishuTemplate: tpl.DEFAULT_FEISHU_BODY },
   };
@@ -172,6 +179,11 @@ function validate(body, partial) {
   if (body.rule !== undefined && !RULES[body.rule]) throw new Error('未知的判断规则');
   if (['gt', 'lt'].includes(body.rule) && (body.threshold === '' || Number.isNaN(Number(body.threshold))))
     throw new Error('“大于/小于”规则需要填写一个数字');
+  if (body.extract !== undefined && !(body.extract in extractor.MODES)) throw new Error('未知的提取方式');
+  if (body.extract === 'regex') {
+    const err = extractor.checkPattern(body.extractPattern);
+    if (err) throw new Error(err);
+  }
 }
 
 app.get('/api/meta', (req, res) => res.json(meta()));
@@ -254,7 +266,15 @@ app.post(
   '/api/preview',
   wrap(async (req, res) => {
     validate(req.body, false);
-    res.json(await browser.preview(req.body.url, req.body.selector, req.body.attribute));
+    const b = req.body;
+    const r = await browser.preview(b.url, b.selector, b.attribute, { downloadSelector: b.downloadSelector });
+    // 同时给出提取后的结果，提取失败不算读取失败，单独提示
+    try {
+      r.extracted = extractor.extract(r.value, b.extract, b.extractPattern);
+    } catch (e) {
+      r.extractError = e.message;
+    }
+    res.json(r);
   })
 );
 
@@ -288,9 +308,31 @@ app.post(
       notifyFeishu: b.notifyFeishu !== false,
       notifyWebhook: b.notifyWebhook !== false,
     };
-    const results = await notify({ kind: 'test', monitor, oldValue: value, newValue: fakeChange(value) });
+    const downloadUrl = b.downloadUrl || saved?.lastDownloadUrl || null;
+    const results = await notify({ kind: 'test', monitor, oldValue: value, newValue: fakeChange(value), downloadUrl });
     res.json({ results });
   })
+);
+
+// ---------- 备份 ----------
+const sendJsonFile = (res, name, data) => {
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  res.type('json').send(JSON.stringify(data, null, 2));
+};
+const stamp = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 16).replace(/[-:T]/g, '');
+
+app.get('/api/backups', (req, res) => res.json(store.listBackups()));
+// 导出当前所有监测和设置（不含登录账号）
+app.get('/api/backups/export', (req, res) => sendJsonFile(res, `pagewatch-backup-${stamp()}.json`, store.exportData()));
+app.get('/api/backups/file/:name', wrap((req, res) => sendJsonFile(res, req.params.name, store.readBackup(req.params.name))));
+app.post(
+  '/api/backups/import',
+  express.json({ limit: '20mb' }),
+  wrap((req, res) => res.json(store.importData(req.body.data, req.body.mode === 'replace' ? 'replace' : 'merge')))
+);
+app.post(
+  '/api/backups/file/:name/restore',
+  wrap((req, res) => res.json(store.importData(store.readBackup(req.params.name), 'replace')))
 );
 
 // ---------- 在线更新 ----------
@@ -330,6 +372,17 @@ app.listen(PORT, HOST, () => {
   if (!store.hasAccount()) console.log('第一次使用：打开上面的地址创建管理员账号');
   browser.warmup();
   checker.start();
+  // 每天自动备份一次（启动时先检查一次，之后每小时看看是不是新的一天了）
+  const backup = () => {
+    try {
+      const name = store.autoBackup();
+      if (name) console.log(`[备份] 已自动备份：${name}`);
+    } catch (e) {
+      console.error('[备份失败]', e.message);
+    }
+  };
+  backup();
+  setInterval(backup, 3600_000).unref();
 });
 
 // 由启动器运行时：启动器没了（比如被宝塔强制结束），这边也跟着退出，免得占着端口

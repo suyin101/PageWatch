@@ -275,6 +275,24 @@ label > input, label > select, label > .inline { margin-top: 6px; font-weight: 4
 .steps .mark { width: 16px; text-align: center; flex: none; }
 .rollback { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
 
+/* 提取、下载按钮 */
+.extracted { margin-top: 6px; font-size: 13px; font-weight: 400; color: var(--muted); }
+.extracted b { color: var(--text); font-family: ui-monospace, Menlo, monospace; background: color-mix(in srgb, var(--primary) 12%, transparent); padding: 1px 6px; border-radius: 4px; }
+.extracted.err b { color: var(--error); background: none; padding: 0; font-family: inherit; }
+.hint { font-size: 12px; background: color-mix(in srgb, var(--primary) 8%, var(--panel)); border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent); border-radius: 8px; padding: 8px 10px; margin: -6px 0 14px; }
+.field > input { margin-top: 6px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+#downloadPreview { word-break: break-all; }
+.pick-banner { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 2; background: #1f2937; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
+.pick-banner .link { color: #93c5fd; margin-left: 8px; }
+.dl-link { font-size: 12px; text-decoration: none; color: var(--primary); white-space: nowrap; }
+.dl-link:hover { text-decoration: underline; }
+
+/* 备份 */
+.backup-list { list-style: none; padding: 0; margin: 8px 0 0; border-top: 1px solid var(--line); }
+.backup-list li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.backup-list .grow { flex: 1; }
+.tag { font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+
 /* 详情 */
 .kv { display: grid; grid-template-columns: 90px 1fr; gap: 6px 12px; font-size: 13px; margin-bottom: 16px; }
 .kv dt { color: var(--muted); }
@@ -317,3 +335,7 @@ label > input, label > select, label > .inline { margin-top: 6px; font-weight: 4
   .editor, .dialog { border-radius: 0; height: 100%; }
   .urlbar { flex-direction: column; }
 }
+
+/* 链接样式的按钮、label 做的按钮，和普通按钮对齐 */
+a.btn, label.btn { display: inline-block; text-decoration: none; margin: 0; font-weight: 400; line-height: 1.5; }
+#downloadPreview { display: block; }

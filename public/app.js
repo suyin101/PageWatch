@@ -186,7 +186,9 @@ function renderList() {
       else {
         value = '';
         if (cat === 'updated' && m.previousValue != null) value += `<div class="value old" title="${esc(m.previousValue)}">${esc(m.previousValue)}</div>`;
-        value += `<div class="value" title="${esc(m.lastValue)}">${esc(m.lastValue)}</div>`;
+        const rawTitle = m.extract && m.lastRaw ? `原文：${m.lastRaw}` : m.lastValue;
+        value += `<div class="value" title="${esc(rawTitle)}">${esc(m.lastValue)}</div>`;
+        if (m.lastDownloadUrl) value += `<a class="dl-link" href="${esc(m.lastDownloadUrl)}" target="_blank" rel="noopener noreferrer">⬇ 下载</a>`;
         if (m.lastError) value += `<div class="err-text">⚠ ${esc(m.lastError)}</div>`;
       }
       return `
@@ -283,6 +285,9 @@ async function openDetail(id) {
     <dl class="kv">
       <dt>网址</dt><dd><a href="${esc(m.url)}" target="_blank" rel="noopener noreferrer">${esc(m.url)}</a></dd>
       <dt>元素</dt><dd><code>${esc(m.selector)}</code>${m.attribute ? ` → 读取 <code>${esc(m.attribute)}</code>` : ''}</dd>
+      ${m.extract ? `<dt>只看</dt><dd>${esc(state.extractModes[m.extract])}${m.extract === 'regex' ? ` <code>${esc(m.extractPattern)}</code>` : ''}</dd>` : ''}
+      ${m.extract && m.lastRaw ? `<dt>原文</dt><dd>${esc(m.lastRaw)}</dd>` : ''}
+      ${m.lastDownloadUrl ? `<dt>下载链接</dt><dd><a href="${esc(m.lastDownloadUrl)}" target="_blank" rel="noopener noreferrer">${esc(m.lastDownloadUrl)}</a></dd>` : ''}
       <dt>规则</dt><dd>${esc(ruleText(m))}</dd>
       <dt>检查间隔</dt><dd>每 ${m.interval} 分钟${m.enabled ? '' : '（已暂停）'}</dd>
       <dt>上次检查</dt><dd>${fullTime(m.lastCheckedAt)}</dd>
@@ -305,12 +310,76 @@ async function openDetail(id) {
 const form = $('#monitorForm');
 const frame = $('#frame');
 
-function setPreview(text, ok = true, meta = '', metaClass = '') {
+// raw：真正读到的原文（text 里可能还带着提示文字），用来做“只看版本号”这类提取
+function setPreview(text, ok = true, meta = '', metaClass = '', raw = text) {
   const box = $('#previewValue');
   box.textContent = text;
   box.className = 'preview-value ' + (ok ? 'has' : 'muted');
+  state.previewRaw = ok ? raw : null;
   setPreviewMeta(meta, metaClass);
+  refreshExtract();
 }
+
+// 按“只看哪部分”的设置，显示实际用来比较的内容；和服务器用的是同一份代码（extract.js）
+function refreshExtract() {
+  const mode = form.extract.value;
+  const raw = state.previewRaw;
+  $('#patternRow').classList.toggle('hidden', mode !== 'regex');
+  const row = $('#extractedRow');
+  const hint = $('#extractHint');
+  row.classList.add('hidden');
+  hint.classList.add('hidden');
+  if (raw == null) return;
+  if (mode) {
+    row.classList.remove('hidden');
+    try {
+      $('#extractedValue').textContent = PWExtract.extract(raw, mode, form.extractPattern.value);
+      row.classList.remove('err');
+    } catch (err) {
+      $('#extractedValue').textContent = '⚠ ' + err.message;
+      row.classList.add('err');
+    }
+    return;
+  }
+  // 整段文字模式下，如果里面有版本号，提醒可以只看版本号
+  const v = PWExtract.suggestVersion(raw);
+  if (v) {
+    hint.innerHTML = `💡 内容里有版本号 <b>${esc(v)}</b>。现在旁边的文字（日期、下载次数等）变了也会通知你，建议
+      <button type="button" class="link" id="btnUseVersion">只看版本号</button>`;
+    hint.classList.remove('hidden');
+    $('#btnUseVersion').onclick = () => {
+      form.extract.value = 'version';
+      refreshExtract();
+    };
+  }
+}
+
+// ---------- 选择下载按钮 ----------
+function setPickTarget(target) {
+  state.pickTarget = target;
+  $('#pickBanner').classList.toggle('hidden', target !== 'download');
+}
+
+function showDownload(url, { tried = false } = {}) {
+  const box = $('#downloadPreview');
+  state.downloadUrl = url || null;
+  if (url) {
+    box.className = 'preview-meta ok';
+    box.innerHTML = `⬇ 下载链接：<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+  } else if (tried && form.downloadSelector.value.trim()) {
+    box.className = 'preview-meta err';
+    box.textContent = '⚠ 这个元素上没读到下载链接，换一个元素试试（比如点按钮本身而不是里面的文字）';
+  } else {
+    box.textContent = '';
+  }
+}
+
+$('#btnPickDownload').addEventListener('click', () => {
+  if (frame.classList.contains('hidden')) return toast('请先在左边加载网页', true);
+  setPickTarget('download');
+});
+$('#btnCancelPick').addEventListener('click', () => setPickTarget('main'));
+form.downloadSelector.addEventListener('input', () => showDownload(null));
 
 function setPreviewMeta(html, cls = '') {
   const m = $('#previewMeta');
@@ -341,6 +410,11 @@ function openEditor(m) {
   form.name.value = m?.name || '';
   form.selector.value = m?.selector || '';
   form.attribute.value = m?.attribute || '';
+  form.extract.value = m?.extract || '';
+  form.extractPattern.value = m?.extractPattern || '';
+  form.downloadSelector.value = m?.downloadSelector || '';
+  setPickTarget('main');
+  showDownload(m?.lastDownloadUrl);
   form.rule.value = m?.rule || 'changed';
   form.threshold.value = m?.threshold ?? '';
   form.interval.value = m?.interval || state.settings.defaultInterval || 30;
@@ -349,7 +423,8 @@ function openEditor(m) {
   form.notifyFeishu.checked = m ? m.notifyFeishu : true;
   form.notifyWebhook.checked = m ? m.notifyWebhook : true;
   toggleThreshold();
-  setPreview(m?.lastValue ?? '还没选择元素', m?.lastValue != null);
+  const raw = m?.lastRaw ?? m?.lastValue;
+  setPreview(raw ?? '还没选择元素', raw != null);
   $('#fUrl').value = m?.url || '';
   frame.classList.add('hidden');
   frame.removeAttribute('src');
@@ -402,6 +477,10 @@ window.addEventListener('message', (e) => {
       } catch {}
     }
     if (d.ok && form.selector.value) frame.contentWindow.postMessage({ type: 'pw-highlight', selector: form.selector.value }, location.origin);
+  } else if (d.type === 'pw-pick' && state.pickTarget === 'download') {
+    form.downloadSelector.value = d.selector;
+    setPickTarget('main');
+    showDownload(d.link || d.attrs.href, { tried: true });
   } else if (d.type === 'pw-pick') {
     state.lastPick = d;
     form.selector.value = d.selector;
@@ -413,7 +492,7 @@ window.addEventListener('message', (e) => {
     if (!d.found) setPreview('⚠ 在网页上找不到这个选择器', false);
     else {
       state.lastPick = null;
-      setPreview(d.text + (d.count > 1 ? `\n\n（匹配到 ${d.count} 个元素，只会读取第一个）` : ''), true);
+      setPreview(d.text + (d.count > 1 ? `\n\n（匹配到 ${d.count} 个元素，只会读取第一个）` : ''), true, '', '', d.text);
     }
   }
 });
@@ -428,6 +507,8 @@ function showPickValue() {
 }
 
 form.attribute.addEventListener('change', showPickValue);
+form.extract.addEventListener('change', refreshExtract);
+form.extractPattern.addEventListener('input', refreshExtract);
 form.rule.addEventListener('change', toggleThreshold);
 
 let selTimer;
@@ -452,8 +533,19 @@ $('#btnTest').addEventListener('click', async () => {
     setPreviewMeta(`<span class="spinner sm"></span>后台正在读取${sec >= 2 ? `，已用 ${sec} 秒（需要重新打开网页时会慢一些）` : '…'}`)
   );
   try {
-    const r = await api('/preview', { method: 'POST', body: { url: $('#fUrl').value.trim(), selector: form.selector.value.trim(), attribute: form.attribute.value } });
+    const r = await api('/preview', {
+      method: 'POST',
+      body: {
+        url: $('#fUrl').value.trim(),
+        selector: form.selector.value.trim(),
+        attribute: form.attribute.value,
+        extract: form.extract.value,
+        extractPattern: form.extractPattern.value,
+        downloadSelector: form.downloadSelector.value.trim(),
+      },
+    });
     stop();
+    showDownload(r.downloadUrl, { tried: true });
     const how = r.live ? '直接读取已打开的网页' : '重新打开网页读取，和定时检查一样';
     setPreview(r.value || '（内容为空）', !!r.value, `✅ 读取成功 · 用时 ${r.ms < 100 ? '不到 0.1' : (r.ms / 1000).toFixed(1)} 秒（${how}）`, 'ok');
   } catch (err) {
@@ -473,6 +565,9 @@ form.addEventListener('submit', async (e) => {
     url: $('#fUrl').value.trim(),
     selector: form.selector.value.trim(),
     attribute: form.attribute.value,
+    extract: form.extract.value,
+    extractPattern: form.extractPattern.value.trim(),
+    downloadSelector: form.downloadSelector.value.trim(),
     rule: form.rule.value,
     threshold: form.threshold.value,
     interval: Number(form.interval.value),
@@ -491,6 +586,15 @@ form.addEventListener('submit', async (e) => {
     $('#formError').textContent = err.message;
   }
 });
+
+function currentCompareValue() {
+  if (state.previewRaw == null) return null;
+  try {
+    return PWExtract.extract(state.previewRaw, form.extract.value, form.extractPattern.value);
+  } catch {
+    return null;
+  }
+}
 
 $('#btnMonitorTestNotify').addEventListener('click', async () => {
   const btn = $('#btnMonitorTestNotify');
@@ -512,8 +616,9 @@ $('#btnMonitorTestNotify').addEventListener('click', async () => {
         note: form.note.value.trim(),
         notifyFeishu: form.notifyFeishu.checked,
         notifyWebhook: form.notifyWebhook.checked,
-        // 用当前读到的内容来模拟变化（还没读到就用示例内容）
-        value: valueBox.classList.contains('has') ? valueBox.textContent : '',
+        // 用当前读到的内容来模拟变化（设置了“只看版本号”就用提取后的；还没读到就用示例内容）
+        value: currentCompareValue() ?? (valueBox.classList.contains('has') ? valueBox.textContent : ''),
+        downloadUrl: state.downloadUrl,
       },
     });
     const ok = results.filter((r) => r.ok).map((r) => r.channel);
@@ -548,6 +653,7 @@ function switchTab(name) {
   for (const p of document.querySelectorAll('#settings .tab-panel')) p.classList.toggle('hidden', p.dataset.panel !== name);
   if (name === 'templates') updateTemplatePreview();
   if (name === 'update') openUpdateTab();
+  if (name === 'backup') loadBackups();
 }
 $('#settingsTabs').addEventListener('click', (e) => e.target.dataset.tab && switchTab(e.target.dataset.tab));
 
@@ -735,6 +841,86 @@ $('#btnLogout').addEventListener('click', async () => {
   location.reload();
 });
 
+// ---------- 数据备份 ----------
+const backupPanel = document.querySelector('[data-panel=backup]');
+
+function backupLabel(b) {
+  const m = b.name.match(/^auto-(\d{4}-\d{2}-\d{2})\.json$/);
+  if (m) return `自动备份 · ${m[1]}`;
+  if (b.name.startsWith('before-restore-')) return `导入/恢复前的备份 · ${fullTime(b.at)}`;
+  return b.name;
+}
+
+async function loadBackups() {
+  const list = await api('/backups').catch(() => []);
+  $('#backupList').innerHTML = list.length
+    ? list
+        .map(
+          (b) => `<li>
+          <span class="grow">${esc(backupLabel(b))}</span>
+          <span class="small muted">${b.monitors ?? '?'} 个监测 · ${Math.max(1, Math.round(b.size / 1024))} KB</span>
+          <a class="btn sm" href="/api/backups/file/${encodeURIComponent(b.name)}" download>下载</a>
+          <button type="button" class="btn sm" data-restore="${esc(b.name)}">恢复</button>
+        </li>`
+        )
+        .join('')
+    : '<li class="muted">还没有备份（程序每天会自动备份一次）</li>';
+}
+
+$('#backupList').addEventListener('click', async (e) => {
+  const name = e.target.dataset.restore;
+  if (!name) return;
+  if (!confirm('用这份备份替换现在全部的监测和通知设置吗？\n（现在的数据会先自动备份一份，登录账号不受影响）')) return;
+  try {
+    const r = await api(`/backups/file/${encodeURIComponent(name)}/restore`, { method: 'POST' });
+    panelMsg(backupPanel, `✅ 已恢复，共 ${r.total} 个监测`, true);
+    loadBackups();
+    refresh();
+  } catch (err) {
+    panelMsg(backupPanel, err.message, false);
+  }
+});
+
+// 选好文件后先看看内容，再让你选“合并”还是“覆盖”
+$('#importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+    if (data.app !== 'PageWatch' || !Array.isArray(data.monitors)) throw new Error();
+  } catch {
+    return panelMsg(backupPanel, '这不是 PageWatch 的备份文件', false);
+  }
+  const box = $('#importChoice');
+  box.innerHTML = `备份里有 <b>${data.monitors.length}</b> 个监测（导出于 ${fullTime(data.exportedAt)}，v${esc(data.version || '?')}）。要怎么导入？
+    <div class="update-actions">
+      <button type="button" class="btn sm primary" data-mode="merge">合并：保留现有的，只添加新的</button>
+      <button type="button" class="btn sm" data-mode="replace">覆盖：用备份替换全部</button>
+      <button type="button" class="btn sm ghost" data-mode="">取消</button>
+    </div>`;
+  box.classList.remove('hidden');
+  box.onclick = async (ev) => {
+    const mode = ev.target.dataset.mode;
+    if (mode === undefined) return;
+    box.classList.add('hidden');
+    if (!mode) return;
+    try {
+      const r = await api('/backups/import', { method: 'POST', body: { data, mode } });
+      panelMsg(
+        backupPanel,
+        mode === 'merge' ? `✅ 导入完成：新增 ${r.added} 个${r.skipped ? `，${r.skipped} 个已存在所以跳过` : ''}，现在共 ${r.total} 个监测` : `✅ 已用备份覆盖，现在共 ${r.total} 个监测`,
+        true
+      );
+      loadBackups();
+      refresh();
+    } catch (err) {
+      panelMsg(backupPanel, err.message, false);
+    }
+  };
+});
+
 // ---------- 版本更新 ----------
 function renderVersionBadge() {
   const b = $('#verBadge');
@@ -904,6 +1090,8 @@ function showApp(data) {
   state.settings = data.settings;
   state.monitors = data.monitors;
   form.rule.innerHTML = Object.entries(state.rules).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  state.extractModes = data.meta.extractModes;
+  form.extract.innerHTML = Object.entries(data.meta.extractModes).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
   renderChips();
   render();
   $('#refreshInfo').textContent = `自动刷新 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;

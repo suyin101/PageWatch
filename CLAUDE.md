@@ -7,6 +7,7 @@
 - `src/store.js` — JSON 文件存储（`data/db.json`），故意不用数据库，免得宝塔上编译原生模块
 - `src/browser.js` — Playwright Chromium：`readElement`（定时检查，屏蔽图片/字体）；`snapshot` 打开的网页会保留 5 分钟（sessions），`preview` 直接在上面读，几乎零等待。不要再等 networkidle 到超时，那是之前慢的主因
 - `src/picker.js` — 注入快照里的点选脚本，通过 postMessage 与面板通信；`/api/snapshot` 用 CSP nonce 只允许它执行
+- `src/extract.js` — 「只看哪部分」提取（版本号/数字/正则），UMD 写法，服务器和网页（/extract.js）共用同一份
 - `src/rules.js` — 判断规则 changed / gt / lt / increased
 - `src/checker.js` — 每 20 秒扫一次到期的监测，并发 2
 - `src/template.js` — 按词 LCS 对比新旧内容 + `{{中文变量}}` 模板；feishu（lark_md）和 plain 两种输出格式
@@ -22,6 +23,8 @@
 - 服务器在国内，GitHub 可能慢；更新包要小，别把大文件提交进仓库
 
 ## 约定
+- 监测的 `lastValue` 是提取后用来比较的值，`lastRaw` 是原文；下载链接读不到不算出错
+- 备份不含登录账号；导入/恢复前先自动备份（before-restore-*），每日自动备份 auto-日期.json 保留 7 份
 - 状态 `updated` 会一直保留，直到用户点“已处理”（`/ack`）
 - 出错只在刚开始出错时通知一次
 - 运行：`npm start`，默认端口 3600

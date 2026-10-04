@@ -106,7 +106,7 @@ function updateSettings(patch) {
   return db.settings;
 }
 
-const EDITABLE = ['name', 'url', 'selector', 'attribute', 'rule', 'threshold', 'interval', 'enabled', 'notifyFeishu', 'notifyWebhook', 'note'];
+const EDITABLE = ['name', 'url', 'selector', 'attribute', 'extract', 'extractPattern', 'downloadSelector', 'rule', 'threshold', 'interval', 'enabled', 'notifyFeishu', 'notifyWebhook', 'note'];
 
 function normalize(m) {
   m.interval = Math.max(1, Number(m.interval) || db.settings.defaultInterval);
@@ -132,13 +132,18 @@ function createMonitor(data) {
     url: '',
     selector: '',
     attribute: '',
+    extract: '', // '' 整段 | version 版本号 | number 数字 | regex 自定义
+    extractPattern: '',
+    downloadSelector: '',
     rule: 'changed',
     threshold: '',
     note: '',
     ...pick(data, EDITABLE),
     status: 'pending', // pending | ok | updated | error
-    lastValue: null,
+    lastValue: null, // 提取后用来比较的值
+    lastRaw: null, // 元素的原始内容
     previousValue: null,
+    lastDownloadUrl: null,
     lastCheckedAt: null,
     lastChangedAt: null,
     lastError: null,
@@ -153,8 +158,9 @@ function createMonitor(data) {
 function updateMonitor(id, patch) {
   const m = getMonitor(id);
   if (!m) return null;
-  const targetChanged = (patch.url && patch.url !== m.url) || (patch.selector && patch.selector !== m.selector) ||
-    (patch.attribute !== undefined && patch.attribute !== m.attribute);
+  const changed = (k) => patch[k] !== undefined && (patch[k] || '') !== (m[k] || '');
+  // 读什么、取哪部分变了，旧值就没有比较意义了
+  const targetChanged = ['url', 'selector', 'attribute', 'extract', 'extractPattern'].some(changed);
   Object.assign(m, pick(patch, EDITABLE));
   normalize(m);
   // 网址或元素换了，旧的值已经没有比较意义，重新建立基准
@@ -192,6 +198,8 @@ function recordCheck(id, result) {
       m.history = m.history.slice(0, HISTORY_LIMIT);
     }
     m.lastValue = result.value;
+    m.lastRaw = result.raw ?? result.value;
+    if (result.downloadUrl !== undefined) m.lastDownloadUrl = result.downloadUrl;
   }
   save();
   return m;
@@ -210,6 +218,121 @@ function deleteMonitor(id) {
   db.monitors = db.monitors.filter((m) => m.id !== id);
   save();
   return db.monitors.length < before;
+}
+
+// ---------- 备份 ----------
+// 备份只包含设置和监测（含历史），不含登录账号，换台服务器也能直接导入
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const KEEP_AUTO = 7;
+const KEEP_SAFETY = 5;
+const appVersion = () => JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+
+function exportData() {
+  return {
+    app: 'PageWatch',
+    type: 'backup',
+    version: appVersion(),
+    exportedAt: new Date().toISOString(),
+    settings: db.settings,
+    monitors: db.monitors,
+  };
+}
+
+function today() {
+  // 按北京时间算“今天”
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+function writeBackup(name) {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const file = path.join(BACKUP_DIR, name);
+  fs.writeFileSync(file + '.tmp', JSON.stringify(exportData(), null, 2));
+  fs.renameSync(file + '.tmp', file);
+  return name;
+}
+
+function prune(prefix, keep) {
+  const files = fs.readdirSync(BACKUP_DIR).filter((f) => f.startsWith(prefix) && f.endsWith('.json')).sort().reverse();
+  for (const f of files.slice(keep)) fs.rmSync(path.join(BACKUP_DIR, f), { force: true });
+}
+
+// 每天自动备份一次，保留最近 7 天
+function autoBackup() {
+  const name = `auto-${today()}.json`;
+  if (fs.existsSync(path.join(BACKUP_DIR, name))) return null;
+  writeBackup(name);
+  prune('auto-', KEEP_AUTO);
+  return name;
+}
+
+// 导入、恢复之前先存一份，万一弄错还能找回来
+function safetyBackup() {
+  const name = `before-restore-${new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 19).replace(/[-:T]/g, '')}.json`;
+  writeBackup(name);
+  prune('before-restore-', KEEP_SAFETY);
+  return name;
+}
+
+function listBackups() {
+  if (!fs.existsSync(BACKUP_DIR)) return [];
+  return fs
+    .readdirSync(BACKUP_DIR)
+    .filter((f) => /^[\w.-]+\.json$/.test(f))
+    .map((f) => {
+      const file = path.join(BACKUP_DIR, f);
+      let monitors = null;
+      try {
+        monitors = JSON.parse(fs.readFileSync(file, 'utf8')).monitors.length;
+      } catch {}
+      return { name: f, auto: f.startsWith('auto-'), size: fs.statSync(file).size, at: fs.statSync(file).mtime.toISOString(), monitors };
+    })
+    .sort((a, b) => b.at.localeCompare(a.at));
+}
+
+function readBackup(name) {
+  if (!/^[\w.-]+\.json$/.test(name || '')) throw new Error('备份文件名不对');
+  const file = path.join(BACKUP_DIR, name);
+  if (!fs.existsSync(file)) throw new Error('找不到这个备份');
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function checkBackup(data) {
+  if (!data || data.app !== 'PageWatch' || !Array.isArray(data.monitors) || typeof data.settings !== 'object') {
+    throw new Error('这不是 PageWatch 的备份文件');
+  }
+}
+
+// mode = 'replace'：用备份替换全部监测和设置；'merge'：保留现有的，只添加备份里没有的监测
+function importData(data, mode) {
+  checkBackup(data);
+  const safety = safetyBackup();
+  const clean = (m) => normalize({ history: [], ...m, id: m.id || crypto.randomUUID() });
+  let added = 0;
+  let skipped = 0;
+  if (mode === 'replace') {
+    db.settings = { ...DEFAULT_DB.settings, ...data.settings };
+    db.monitors = data.monitors.map(clean);
+    added = db.monitors.length;
+  } else {
+    const key = (m) => `${m.url}\n${m.selector}`;
+    const have = new Set(db.monitors.map(key));
+    const ids = new Set(db.monitors.map((m) => m.id));
+    for (const m of data.monitors) {
+      if (have.has(key(m))) {
+        skipped++;
+        continue;
+      }
+      const copy = clean(m);
+      if (ids.has(copy.id)) copy.id = crypto.randomUUID();
+      db.monitors.push(copy);
+      ids.add(copy.id);
+      added++;
+    }
+    // 通知地址这类设置，只补上现在还空着的
+    for (const [k, v] of Object.entries(data.settings)) if (k in DEFAULT_DB.settings && !db.settings[k] && v) db.settings[k] = v;
+  }
+  save();
+  return { added, skipped, total: db.monitors.length, safety };
 }
 
 function pick(obj, keys) {
@@ -235,4 +358,10 @@ module.exports = {
   recordCheck,
   acknowledge,
   deleteMonitor,
+  exportData,
+  autoBackup,
+  listBackups,
+  readBackup,
+  importData,
+  BACKUP_DIR,
 };

@@ -14,7 +14,7 @@ const browser = require('../src/browser');
   const url = process.argv[2] || 'https://www.baidu.com';
   const t = Date.now();
   try {
-    const title = await browser.readElement(url, 'title');
+    const { raw: title } = await browser.readElement(url, 'title');
     console.log(`✅ 浏览器正常：打开 ${url} 用时 ${((Date.now() - t) / 1000).toFixed(1)} 秒，标题“${title}”`);
     process.exitCode = 0;
   } catch (e) {

@@ -88,8 +88,29 @@ async function readFromPage(page, selector, attribute, settleMs = 2500) {
   return cleanText(await loc.evaluate((el) => el.innerText || el.textContent));
 }
 
-// 定时检查用：不加载图片、视频、字体，只要文字，所以更快
-async function readElement(url, selector, attribute) {
+// 读下载按钮的链接。读不到不算出错（下载按钮只是附带信息），返回 null
+async function readDownload(page, selector) {
+  if (!selector) return null;
+  try {
+    const loc = page.locator(selector).first();
+    await loc.waitFor({ state: 'attached', timeout: 5000 });
+    return await loc.evaluate((el) => {
+      // 点到的可能是按钮里面的文字，往外找最近的链接
+      const a = el.closest('a[href]') || el.querySelector('a[href]');
+      const url = (a && a.href) || el.getAttribute('data-href') || el.getAttribute('data-url') || '';
+      if (!url || /^javascript:/i.test(url)) return null;
+      // 只是跳到本页某个位置（#xxx）的不算下载链接
+      if (url.split('#')[0] === location.href.split('#')[0] && url.includes('#')) return null;
+      return new URL(url, location.href).href;
+    });
+  } catch {
+    return null;
+  }
+}
+
+// 定时检查用：不加载图片、视频、字体，只要文字，所以更快。
+// 返回 { raw: 元素内容, downloadUrl: 下载链接或 null }
+async function readElement(url, selector, attribute, { downloadSelector } = {}) {
   const context = await newContext();
   try {
     await context.route('**/*', (route) =>
@@ -97,7 +118,8 @@ async function readElement(url, selector, attribute) {
     );
     const page = await context.newPage();
     await gotoPage(page, url);
-    return await readFromPage(page, selector, attribute);
+    const raw = await readFromPage(page, selector, attribute);
+    return { raw, downloadUrl: await readDownload(page, downloadSelector) };
   } finally {
     await context.close();
   }
@@ -185,7 +207,7 @@ async function snapshot(url, { fresh = true } = {}) {
 }
 
 // “真实读取测试”：有打开着的网页就直接读，没有就像定时检查一样重新打开
-async function preview(url, selector, attribute) {
+async function preview(url, selector, attribute, { downloadSelector } = {}) {
   const started = Date.now();
   const s = sessions.get(url);
   if (s) {
@@ -193,14 +215,15 @@ async function preview(url, selector, attribute) {
       await s.ready;
       touch(url);
       const value = await readFromPage(s.page, selector, attribute, 0);
-      return { value, ms: Date.now() - started, live: true };
+      const downloadUrl = await readDownload(s.page, downloadSelector);
+      return { value, downloadUrl, ms: Date.now() - started, live: true };
     } catch (e) {
       if (/找不到这个元素|没有 .* 属性/.test(e.message)) throw e;
       // 网页可能已经坏了，退回到重新打开
     }
   }
-  const value = await readElement(url, selector, attribute);
-  return { value, ms: Date.now() - started, live: false };
+  const { raw, downloadUrl } = await readElement(url, selector, attribute, { downloadSelector });
+  return { value: raw, downloadUrl, ms: Date.now() - started, live: false };
 }
 
 async function closeBrowser() {

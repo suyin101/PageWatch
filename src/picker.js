@@ -66,7 +66,9 @@
     for (const a of ['href', 'src', 'title', 'alt', 'value', 'datetime', 'content']) {
       if (el.hasAttribute(a)) attrs[a] = a === 'href' || a === 'src' ? el[a] : el.getAttribute(a);
     }
-    return { selector: cssPath(el), text: text(el).slice(0, 500), tag: el.tagName.toLowerCase(), attrs };
+    const a = el.closest('a[href]') || el.querySelector('a[href]');
+    const link = a && !/^javascript:/i.test(a.getAttribute('href')) ? a.href : '';
+    return { selector: cssPath(el), text: text(el).slice(0, 500), tag: el.tagName.toLowerCase(), attrs, link };
   }
 
   function pick(el) {

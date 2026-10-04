@@ -17,19 +17,21 @@ async function postJson(url, body) {
   return text;
 }
 
-function buttons(monitor) {
-  const actions = [{ tag: 'button', text: { tag: 'plain_text', content: '打开网页' }, url: monitor.url, type: 'primary' }];
+function buttons(monitor, downloadUrl) {
+  const actions = [];
+  if (downloadUrl) actions.push({ tag: 'button', text: { tag: 'plain_text', content: '⬇ 下载新版本' }, url: downloadUrl, type: 'primary' });
+  actions.push({ tag: 'button', text: { tag: 'plain_text', content: '打开网页' }, url: monitor.url, type: downloadUrl ? 'default' : 'primary' });
   if (PUBLIC_URL) actions.push({ tag: 'button', text: { tag: 'plain_text', content: '打开监测面板' }, url: PUBLIC_URL, type: 'default' });
   return { tag: 'action', actions };
 }
 
-function card(title, color, body, monitor) {
+function card(title, color, body, monitor, downloadUrl) {
   return {
     msg_type: 'interactive',
     card: {
       config: { wide_screen_mode: true },
       header: { title: { tag: 'plain_text', content: title }, template: color },
-      elements: [{ tag: 'div', text: { tag: 'lark_md', content: body } }, { tag: 'hr' }, buttons(monitor)],
+      elements: [{ tag: 'div', text: { tag: 'lark_md', content: body } }, { tag: 'hr' }, buttons(monitor, downloadUrl)],
     },
   };
 }
@@ -44,7 +46,7 @@ function feishuMessage(event, settings) {
   }
   const title = tpl.renderText(settings.feishuTitleTemplate || tpl.DEFAULT_FEISHU_TITLE, tpl.variables(event, 'plain'));
   const body = tpl.renderText(settings.feishuTemplate || tpl.DEFAULT_FEISHU_BODY, tpl.variables(event, 'feishu'));
-  return card(title, 'orange', body, monitor);
+  return card(title, 'orange', body, monitor, event.downloadUrl);
 }
 
 function webhookMessage(event, settings) {
@@ -59,6 +61,8 @@ function webhookMessage(event, settings) {
     monitor: { id: monitor.id, name: monitor.name, url: monitor.url, selector: monitor.selector, rule: monitor.rule, note: monitor.note },
     oldValue: event.oldValue ?? null,
     newValue: event.newValue ?? null,
+    raw: event.raw ?? event.newValue ?? null,
+    downloadUrl: event.downloadUrl ?? null,
     changes: vars ? tpl.diff(event.oldValue, event.newValue).changes : [],
     summary: vars ? vars.变化 : null,
     error: event.error ?? null,
@@ -143,6 +147,7 @@ const SAMPLE_EVENT = {
   },
   oldValue: '置顶 百度网盘SVIP优惠购！季卡优惠48/季度，青春卡178/年',
   newValue: '置顶 百度网盘SVIP优惠购！季卡优惠49/季度，青春卡178/年',
+  downloadUrl: 'https://pan.baidu.com/download',
 };
 
 // 预览：返回飞书标题、正文和 Webhook 的 JSON，不真的发送
