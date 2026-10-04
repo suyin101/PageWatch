@@ -247,6 +247,12 @@ label > input, label > select, label > .inline { margin-top: 6px; font-weight: 4
 .feishu-btns span { display: inline-block; background: #3370ff; color: #fff; border-radius: 6px; padding: 4px 12px; font-size: 13px; }
 .json-preview { margin: 6px 0 0; background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 
+/* 启动加载 */
+.splash { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); }
+.btn .spinner.sm { display: inline-block; vertical-align: -2px; margin-right: 6px; border-color: rgba(255, 255, 255, .4); border-top-color: #fff; }
+.notify-test { margin: 6px 0 4px; }
+.notify-test .preview-meta { white-space: pre-line; }
+
 /* 详情 */
 .kv { display: grid; grid-template-columns: 90px 1fr; gap: 6px 12px; font-size: 13px; margin-bottom: 16px; }
 .kv dt { color: var(--muted); }

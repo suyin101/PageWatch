@@ -11,6 +11,7 @@ if (fs.existsSync(ENV_FILE)) {
 }
 
 const express = require('express');
+const compression = require('compression');
 const crypto = require('crypto');
 const store = require('./src/store');
 const checker = require('./src/checker');
@@ -30,6 +31,7 @@ if (!store.hasAccount() && process.env.ADMIN_USER && process.env.ADMIN_PASSWORD)
 
 const app = express();
 app.set('trust proxy', true);
+app.use(compression()); // 网页文件和数据压缩后再传，打开更快
 app.use(express.json({ limit: '1mb' }));
 
 // ---------- 登录 ----------
@@ -72,8 +74,37 @@ function checkNewAccount(username, password) {
 const wrap = (fn) => (req, res) =>
   Promise.resolve().then(() => fn(req, res)).catch((e) => res.status(400).json({ error: e.message.split('\n')[0] }));
 
+function view(m) {
+  const { history, ...rest } = m;
+  return { ...rest, checking: checker.isChecking(m.id) };
+}
+
+function meta() {
+  return {
+    rules: RULES,
+    variables: tpl.VARIABLES,
+    defaults: { feishuTitleTemplate: tpl.DEFAULT_FEISHU_TITLE, feishuTemplate: tpl.DEFAULT_FEISHU_BODY },
+  };
+}
+
+// 打开页面需要的所有数据一次给全，省掉好几轮来回请求（服务器在远处时每一轮都要等）
+function bootstrap() {
+  return {
+    authed: true,
+    hasAccount: true,
+    username: store.getUsername(),
+    meta: meta(),
+    settings: store.getSettings(),
+    monitors: store.listMonitors().map(view),
+  };
+}
+
 app.get('/api/me', (req, res) =>
   res.json({ authed: isAuthed(req), hasAccount: store.hasAccount(), username: isAuthed(req) ? store.getUsername() : '' })
+);
+
+app.get('/api/bootstrap', (req, res) =>
+  res.json(isAuthed(req) ? bootstrap() : { authed: false, hasAccount: store.hasAccount() })
 );
 
 // 第一次使用：创建管理员账号（已有账号时不能再调用）
@@ -86,7 +117,7 @@ app.post(
     checkNewAccount(username, password);
     store.setAccount(username, password);
     startSession(req, res);
-    res.json({ ok: true });
+    res.json({ ok: true, ...bootstrap() });
   })
 );
 
@@ -99,7 +130,7 @@ app.post('/api/login', (req, res) => {
   }
   failures.delete(req.ip);
   startSession(req, res);
-  res.json({ ok: true });
+  res.json({ ok: true, ...bootstrap() });
 });
 
 app.post('/api/logout', (req, res) => {
@@ -125,10 +156,6 @@ app.put(
 );
 
 // ---------- 接口 ----------
-function view(m) {
-  const { history, ...rest } = m;
-  return { ...rest, checking: checker.isChecking(m.id) };
-}
 
 function validate(body, partial) {
   if (!partial || body.url !== undefined) {
@@ -145,13 +172,7 @@ function validate(body, partial) {
     throw new Error('“大于/小于”规则需要填写一个数字');
 }
 
-app.get('/api/meta', (req, res) =>
-  res.json({
-    rules: RULES,
-    variables: tpl.VARIABLES,
-    defaults: { feishuTitleTemplate: tpl.DEFAULT_FEISHU_TITLE, feishuTemplate: tpl.DEFAULT_FEISHU_BODY },
-  })
-);
+app.get('/api/meta', (req, res) => res.json(meta()));
 
 function checkTemplates(settings) {
   if (settings.webhookTemplate) tpl.renderJson(settings.webhookTemplate, tpl.variables(SAMPLE_EVENT, 'plain'));
@@ -232,6 +253,41 @@ app.post(
   wrap(async (req, res) => {
     validate(req.body, false);
     res.json(await browser.preview(req.body.url, req.body.selector, req.body.attribute));
+  })
+);
+
+// 编辑监测时“发送测试通知”：用这个监测自己的名称、网址和内容，模拟一次变化发出去
+function fakeChange(value) {
+  // 把最后一个数字加 1，比如 v2.3.1 → v2.3.2，这样能看到“变化”是怎么标出来的
+  const m = value.match(/(\d+)(?!.*\d)/s);
+  if (m) return value.slice(0, m.index) + (Number(m[1]) + 1) + value.slice(m.index + m[1].length);
+  return value + '（新）';
+}
+
+app.post(
+  '/api/monitors/test-notify',
+  wrap(async (req, res) => {
+    const b = req.body;
+    const s = store.getSettings();
+    const feishu = !!s.feishuWebhook && b.notifyFeishu !== false;
+    const hook = !!s.customWebhook && b.notifyWebhook !== false;
+    if (!s.feishuWebhook && !s.customWebhook) throw new Error('还没填写通知地址，请先到「设置 → 通知渠道」里填写');
+    if (!feishu && !hook) throw new Error('这个监测的「飞书通知」和「Webhook 通知」都没勾选');
+    const saved = b.id ? store.getMonitor(b.id) : null;
+    const value = String(b.value || saved?.lastValue || '').trim() || '示例内容 v1.0';
+    const monitor = {
+      id: b.id || 'test',
+      name: `【测试】${b.name || '未命名监测'}`,
+      url: b.url || 'https://example.com',
+      selector: b.selector || '',
+      rule: b.rule || 'changed',
+      threshold: b.threshold,
+      note: b.note || '',
+      notifyFeishu: b.notifyFeishu !== false,
+      notifyWebhook: b.notifyWebhook !== false,
+    };
+    const results = await notify({ kind: 'test', monitor, oldValue: value, newValue: fakeChange(value) });
+    res.json({ results });
   })
 );
 

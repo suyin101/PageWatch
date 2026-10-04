@@ -8,6 +8,9 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- 打开网页时先显示“加载中”，不要白屏 -->
+  <div id="splash" class="splash"><div class="spinner"></div><div>正在加载…</div></div>
+
   <!-- 登录 -->
   <div id="login" class="login hidden">
     <form id="loginForm" class="login-box">
@@ -119,6 +122,11 @@
             <label class="check"><input type="checkbox" name="enabled" checked> 启用</label>
             <label class="check"><input type="checkbox" name="notifyFeishu" checked> 飞书通知</label>
             <label class="check"><input type="checkbox" name="notifyWebhook" checked> Webhook 通知</label>
+          </div>
+
+          <div class="notify-test">
+            <button type="button" class="btn sm" id="btnMonitorTestNotify" title="用这个监测的名称和内容，模拟一次变化，发到勾选的通知渠道">📨 发送测试通知</button>
+            <div id="notifyTestMsg" class="preview-meta"></div>
           </div>
 
           <p class="error" id="formError"></p>

@@ -86,6 +86,7 @@ document.addEventListener('keydown', (e) => {
 let setupMode = false;
 function showLogin(hasAccount = true) {
   setupMode = !hasAccount;
+  $('#splash').classList.add('hidden');
   const lf = $('#loginForm');
   $('#app').classList.add('hidden');
   $('#login').classList.remove('hidden');
@@ -105,13 +106,23 @@ $('#loginForm').addEventListener('submit', async (e) => {
   try {
     if (setupMode && f.password.value !== f.password2.value) throw new Error('两次输入的密码不一样');
     const body = { username: f.username.value.trim(), password: f.password.value };
-    await api(setupMode ? '/setup' : '/login', { method: 'POST', body });
+    setLoginBusy(true);
+    // 登录接口直接带回所有数据，拿到就能显示，不用再等好几轮请求
+    const data = await api(setupMode ? '/setup' : '/login', { method: 'POST', body });
     f.reset();
-    boot();
+    showApp(data);
   } catch (err) {
     $('#loginError').textContent = err.message;
+  } finally {
+    setLoginBusy(false);
   }
 });
+
+function setLoginBusy(busy) {
+  const b = $('#loginBtn');
+  b.disabled = busy;
+  b.innerHTML = busy ? '<span class="spinner sm"></span>' + (setupMode ? '正在创建…' : '登录中…') : setupMode ? '创建账号并进入' : '登录';
+}
 
 // ---------- 总面板 ----------
 const STAT_DEFS = [
@@ -255,7 +266,12 @@ async function refresh() {
     render();
     $('#refreshInfo').textContent = `自动刷新 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
   } catch {}
-  // 有正在检查的就刷新得勤一点
+  scheduleRefresh();
+}
+
+// 有正在检查的就刷新得勤一点
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
   refreshTimer = setTimeout(refresh, state.monitors.some((m) => m.checking) ? 3000 : 15000);
 }
 
@@ -320,6 +336,7 @@ function openEditor(m) {
   state.lastPick = null;
   $('#editorTitle').textContent = m ? '编辑监测' : '新建监测';
   $('#formError').textContent = '';
+  $('#notifyTestMsg').textContent = '';
   form.reset();
   form.name.value = m?.name || '';
   form.selector.value = m?.selector || '';
@@ -472,6 +489,44 @@ form.addEventListener('submit', async (e) => {
     refresh();
   } catch (err) {
     $('#formError').textContent = err.message;
+  }
+});
+
+$('#btnMonitorTestNotify').addEventListener('click', async () => {
+  const btn = $('#btnMonitorTestNotify');
+  const msg = $('#notifyTestMsg');
+  btn.disabled = true;
+  msg.className = 'preview-meta';
+  msg.innerHTML = '<span class="spinner sm"></span>正在发送…';
+  try {
+    const valueBox = $('#previewValue');
+    const { results } = await api('/monitors/test-notify', {
+      method: 'POST',
+      body: {
+        id: state.editingId,
+        name: form.name.value.trim(),
+        url: $('#fUrl').value.trim(),
+        selector: form.selector.value.trim(),
+        rule: form.rule.value,
+        threshold: form.threshold.value,
+        note: form.note.value.trim(),
+        notifyFeishu: form.notifyFeishu.checked,
+        notifyWebhook: form.notifyWebhook.checked,
+        // 用当前读到的内容来模拟变化（还没读到就用示例内容）
+        value: valueBox.classList.contains('has') ? valueBox.textContent : '',
+      },
+    });
+    const ok = results.filter((r) => r.ok).map((r) => r.channel);
+    const bad = results.filter((r) => !r.ok);
+    msg.className = 'preview-meta ' + (bad.length ? 'err' : 'ok');
+    msg.textContent = [ok.length ? `✅ 已发送到：${ok.join('、')}，去看看收到没有` : '', ...bad.map((r) => `❌ ${r.channel}：${r.error}`)]
+      .filter(Boolean)
+      .join('\n');
+  } catch (err) {
+    msg.className = 'preview-meta err';
+    msg.textContent = '❌ ' + err.message;
+  } finally {
+    btn.disabled = false;
   }
 });
 
@@ -679,21 +734,33 @@ $('#btnLogout').addEventListener('click', async () => {
 });
 
 // ---------- 启动 ----------
-async function boot() {
-  const me = await fetch('/api/me').then((r) => r.json());
-  if (!me.authed) return showLogin(me.hasAccount);
-  state.username = me.username;
-  $('#login').classList.add('hidden');
-  $('#app').classList.remove('hidden');
-  $('#btnLogout').title = `退出登录（${me.username}）`;
-  const [meta, settings] = await Promise.all([api('/meta'), api('/settings')]);
-  state.rules = meta.rules;
-  state.variables = meta.variables;
-  state.defaults = meta.defaults;
-  state.settings = settings;
+// 数据都准备好、界面画好以后再显示，避免先看到空白
+function showApp(data) {
+  state.username = data.username;
+  state.rules = data.meta.rules;
+  state.variables = data.meta.variables;
+  state.defaults = data.meta.defaults;
+  state.settings = data.settings;
+  state.monitors = data.monitors;
   form.rule.innerHTML = Object.entries(state.rules).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
   renderChips();
-  refresh();
+  render();
+  $('#refreshInfo').textContent = `自动刷新 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+  $('#btnLogout').title = `退出登录（${data.username}）`;
+  $('#splash').classList.add('hidden');
+  $('#login').classList.add('hidden');
+  $('#app').classList.remove('hidden');
+  scheduleRefresh();
+}
+
+async function boot() {
+  try {
+    const data = await fetch('/api/bootstrap').then((r) => r.json());
+    if (!data.authed) return showLogin(data.hasAccount);
+    showApp(data);
+  } catch {
+    $('#splash').innerHTML = '<div>连不上服务器，请检查网络后刷新页面</div>';
+  }
 }
 
 boot();

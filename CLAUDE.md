@@ -18,4 +18,4 @@
 - 状态 `updated` 会一直保留，直到用户点“已处理”（`/ack`）
 - 出错只在刚开始出错时通知一次
 - 运行：`npm start`，默认端口 3600
-- 部署：`npm run pack` 打包 → 服务器 `bash deploy/install.sh`（国内镜像、自动识别 apt/dnf、找宝塔的 /www/server/nodejs）。playwright 锁定版本，升级前先确认 npmmirror 上有对应浏览器版本；服务器上 `PLAYWRIGHT_BROWSERS_PATH=0` 把浏览器装在项目内
+- 部署：`npm run pack`（默认不带 data，首次搬家用 `--with-data`）→ 服务器首次 `bash deploy/install.sh`，更新用 `bash deploy/update.sh`（国内镜像、自动识别 apt/dnf、找宝塔的 /www/server/nodejs）。playwright 锁定版本，升级前先确认 npmmirror 上有对应浏览器版本；服务器上 `PLAYWRIGHT_BROWSERS_PATH=0` 把浏览器装在项目内

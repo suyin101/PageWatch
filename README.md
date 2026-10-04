@@ -31,7 +31,7 @@ npm start
 需要：Linux 服务器（Ubuntu 22.04 最省事；CentOS 7 不行）、宝塔面板、Node.js 20 或更新、建议 2G 内存。
 安装脚本会自动识别系统，依赖和浏览器全部走国内镜像。
 
-1. **打包**（在 Mac 上）：`npm run pack`，桌面上会生成 `pagewatch.zip`，默认带上你现在的监测、设置和账号（不想带就用 `npm run pack -- --no-data`）
+1. **打包**（在 Mac 上）：`npm run pack -- --with-data`，桌面上会生成 `pagewatch.zip`，带上你现在的监测、设置和账号（想全新开始就用 `npm run pack`）
 2. **装 Node.js**：宝塔 → 软件商店 → 搜索安装「Node.js版本管理器」→ 在里面安装 **v20 或 v22**
 3. **上传**：宝塔 → 文件 → 进入 `/www/wwwroot` → 上传 `pagewatch.zip` → 右键解压到 `/www/wwwroot/pagewatch`
 4. **一键安装**：宝塔 → 终端，粘贴运行
@@ -45,6 +45,13 @@ npm start
    - 有已备案的域名：在项目里绑定域名，再到「SSL」申请免费证书
    - 没有域名：宝塔「安全」和云服务器控制台的「安全组/防火墙」都放行 3600 端口，访问 `http://服务器IP:3600`
 7. **关掉 Mac 上的 PageWatch**，不然两边都会检查、发重复通知
+
+## 以后更新到新版本
+
+1. Mac 上运行 `npm run pack`（不带数据，不会覆盖服务器上的监测和设置）
+2. 宝塔 → 文件 → 上传 `pagewatch.zip` 到项目目录 → 解压，提示覆盖时选覆盖
+3. 宝塔终端：`cd 项目目录 && bash deploy/update.sh`
+4. 宝塔 → Node项目 → 重启
 
 **内存提示**：每次检查会打开一个浏览器页面，建议服务器至少 1GB 内存。内存小的话可以把 `src/checker.js` 里的 `CONCURRENCY` 改成 1。
 
