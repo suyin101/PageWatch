@@ -144,6 +144,20 @@ async function closeSession(url) {
   await s.context.close().catch(() => {});
 }
 
+// 等 JS 生成的内容出来，再快速滚到底触发懒加载。图片不用等：快照里图片由你的浏览器自己去加载
+async function prime(page) {
+  await settle(page, 1500);
+  await page
+    .evaluate(async () => {
+      for (let y = 0; y < document.body.scrollHeight && y < 10000; y += 1000) {
+        window.scrollTo(0, y);
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      window.scrollTo(0, 0);
+    })
+    .catch(() => {});
+}
+
 async function openSession(url, fresh) {
   const existing = sessions.get(url);
   if (existing && !fresh) {
@@ -158,18 +172,7 @@ async function openSession(url, fresh) {
   const page = await context.newPage();
   const ready = (async () => {
     await gotoPage(page, url);
-    await settle(page, 1500);
-    // 图片不用等：快照里图片由你的浏览器自己去加载。只要 JS 生成的内容出来就行
-    // 快速滚到底，触发懒加载的内容
-    await page
-      .evaluate(async () => {
-        for (let y = 0; y < document.body.scrollHeight && y < 10000; y += 1000) {
-          window.scrollTo(0, y);
-          await new Promise((r) => setTimeout(r, 40));
-        }
-        window.scrollTo(0, 0);
-      })
-      .catch(() => {});
+    await prime(page);
   })();
   sessions.set(url, { context, page, ready, timer: null });
   try {
@@ -206,6 +209,64 @@ async function snapshot(url, { fresh = true } = {}) {
   return { html, finalUrl: page.url() };
 }
 
+// “浏览网页”模式：在真实网页上点一下（链接、按钮、标签页都行），等网页反应完，返回现在的网址。
+// 网址变了的话，这个打开着的网页就改记在新网址名下，前端接着用新网址取快照
+async function clickInSession(url, selector, href) {
+  const page = await openSession(url, false);
+  const context = page.context();
+  // 原本在新窗口打开的链接，改成在当前网页打开
+  await page.evaluate(() => document.querySelectorAll('a[target]').forEach((a) => a.removeAttribute('target'))).catch(() => {});
+
+  // 点完后最多等 2 秒，看会不会跳转或弹出新窗口
+  let cleanup = () => {};
+  const reaction = new Promise((resolve) => {
+    const onNav = (f) => f === page.mainFrame() && resolve({ nav: true });
+    const onPopup = (p) => resolve({ popup: p });
+    page.on('framenavigated', onNav);
+    context.on('page', onPopup);
+    const timer = setTimeout(() => resolve({}), 2000);
+    cleanup = () => {
+      page.off('framenavigated', onNav);
+      context.off('page', onPopup);
+      clearTimeout(timer);
+    };
+  });
+
+  const loc = page.locator(selector).first();
+  let clicked = await loc.click({ timeout: 5000 }).then(() => true, () => false);
+  // 元素被挡住或看不见时，直接用 JS 点
+  if (!clicked) clicked = await loc.evaluate((el) => (el.click(), true), null, { timeout: 3000 }).catch(() => false);
+
+  if (!clicked) {
+    cleanup();
+    if (!href) throw new Error('在网页上点不到这个元素，换一个地方点试试');
+    await gotoPage(page, href);
+  } else {
+    const r = await reaction;
+    cleanup();
+    if (r.popup) {
+      // 弹出了新窗口：拿到它的网址，在当前网页打开
+      await r.popup.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {});
+      const popupUrl = r.popup.url();
+      await r.popup.close().catch(() => {});
+      if (/^https?:/.test(popupUrl)) await gotoPage(page, popupUrl);
+    } else if (r.nav) {
+      await page.waitForLoadState('domcontentloaded', { timeout: NAV_TIMEOUT }).catch(() => {});
+    }
+  }
+  await prime(page);
+
+  const now = page.url();
+  if (now !== url && sessions.get(url)?.page === page) {
+    if (sessions.has(now)) await closeSession(now);
+    const s = sessions.get(url);
+    sessions.delete(url);
+    sessions.set(now, s);
+  }
+  touch(now);
+  return now;
+}
+
 // “真实读取测试”：有打开着的网页就直接读，没有就像定时检查一样重新打开
 async function preview(url, selector, attribute, { downloadSelector } = {}) {
   const started = Date.now();
@@ -234,4 +295,4 @@ async function closeBrowser() {
   if (b) await b.close().catch(() => {});
 }
 
-module.exports = { readElement, snapshot, preview, warmup, closeBrowser };
+module.exports = { readElement, snapshot, preview, clickInSession, warmup, closeBrowser };

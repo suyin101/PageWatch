@@ -61,6 +61,14 @@
             <input type="url" id="fUrl" placeholder="粘贴要监测的网址，例如 https://www.blackmagicdesign.com/cn/products/davinciresolve" required>
             <button class="btn primary" type="submit">加载网页</button>
           </form>
+          <div class="modebar hidden" id="modeBar">
+            <button type="button" class="btn sm" id="btnBack" title="回到上一个网页" disabled>← 返回</button>
+            <div class="seg" id="modeSeg">
+              <button type="button" data-mode="pick" class="on">🎯 选择元素</button>
+              <button type="button" data-mode="browse">🖱 浏览网页</button>
+            </div>
+            <span class="small muted" id="modeHint"></span>
+          </div>
           <div class="frame-wrap">
             <div class="frame-tip" id="frameTip">
               <div class="big">① 输入网址并加载</div>
@@ -302,6 +310,7 @@
             <p id="updateMsg" class="small"></p>
           </div>
           <div id="rollbackBox" class="rollback"></div>
+          <div id="changelogBox" class="changelog"></div>
         </div>
       </div>
 

@@ -7,12 +7,18 @@
   style.textContent = `
     .__pw-hover { outline: 2px dashed #f59e0b !important; outline-offset: 2px !important; cursor: crosshair !important; }
     .__pw-picked { outline: 3px solid #2563eb !important; outline-offset: 2px !important; background: rgba(37,99,235,.12) !important; }
-    * { cursor: crosshair !important; }
+    html:not(.__pw-browse) * { cursor: crosshair !important; }
+    .__pw-browse .__pw-hover { outline: 2px solid #16a34a !important; cursor: pointer !important; }
   `;
   document.head.appendChild(style);
 
   let hovered = null;
   let picked = null;
+  // pick：点击是选元素；browse：点击是在后台真实网页上点一下（进入链接、切换标签页等）
+  let mode = 'pick';
+  // 浏览模式下，点到按钮里的文字/图标，算作点按钮本身
+  const clickable = (el) =>
+    el.closest('a[href], button, summary, label, select, input, [role="button"], [role="tab"], [role="link"], [role="menuitem"], [tabindex]') || el;
 
   // 看起来像自动生成的随机 class/id（如 css-1x2y3z、sc-abc123），不稳定，不用
   const unstable = (s) =>
@@ -84,7 +90,7 @@
     'mouseover',
     (e) => {
       if (hovered) hovered.classList.remove('__pw-hover');
-      hovered = e.target;
+      hovered = mode === 'browse' ? clickable(e.target) : e.target;
       if (hovered !== picked) hovered.classList.add('__pw-hover');
     },
     true
@@ -99,14 +105,19 @@
     true
   );
 
-  // 拦截所有点击，防止点到链接跳走
+  // 拦截所有点击，防止快照自己跳走；浏览模式下把点击交给后台的真实网页去点
   for (const type of ['click', 'mousedown', 'mouseup', 'submit', 'auxclick']) {
     document.addEventListener(
       type,
       (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (type === 'click') pick(e.target);
+        if (type !== 'click') return;
+        if (mode === 'pick') return pick(e.target);
+        const el = clickable(e.target);
+        const a = el.closest('a[href]');
+        const href = a && !/^javascript:/i.test(a.getAttribute('href')) ? a.href : '';
+        send({ type: 'pw-click', selector: cssPath(el), href, text: text(el).slice(0, 40) });
       },
       true
     );
@@ -115,7 +126,12 @@
   // 面板发来的指令：选父级元素、根据选择器高亮
   window.addEventListener('message', (e) => {
     if (e.origin !== ORIGIN || !e.data) return;
-    if (e.data.type === 'pw-parent' && picked && picked.parentElement && picked.parentElement !== document.body) {
+    if (e.data.type === 'pw-mode') {
+      mode = e.data.mode === 'browse' ? 'browse' : 'pick';
+      document.documentElement.classList.toggle('__pw-browse', mode === 'browse');
+      if (hovered) hovered.classList.remove('__pw-hover');
+      hovered = null;
+    } else if (e.data.type === 'pw-parent' && picked && picked.parentElement && picked.parentElement !== document.body) {
       pick(picked.parentElement);
     } else if (e.data.type === 'pw-highlight') {
       let el = null;

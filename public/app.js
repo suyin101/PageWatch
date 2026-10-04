@@ -376,6 +376,7 @@ function showDownload(url, { tried = false } = {}) {
 
 $('#btnPickDownload').addEventListener('click', () => {
   if (frame.classList.contains('hidden')) return toast('请先在左边加载网页', true);
+  setFrameMode('pick');
   setPickTarget('download');
 });
 $('#btnCancelPick').addEventListener('click', () => setPickTarget('main'));
@@ -403,6 +404,7 @@ function toggleThreshold() {
 function openEditor(m) {
   state.editingId = m ? m.id : null;
   state.lastPick = null;
+  state.autoName = null;
   $('#editorTitle').textContent = m ? '编辑监测' : '新建监测';
   $('#formError').textContent = '';
   $('#notifyTestMsg').textContent = '';
@@ -426,6 +428,9 @@ function openEditor(m) {
   const raw = m?.lastRaw ?? m?.lastValue;
   setPreview(raw ?? '还没选择元素', raw != null);
   $('#fUrl').value = m?.url || '';
+  state.navStack = [];
+  setFrameMode('pick');
+  $('#modeBar').classList.add('hidden');
   frame.classList.add('hidden');
   frame.removeAttribute('src');
   $('#frameLoading').classList.add('hidden');
@@ -461,8 +466,60 @@ function loadFrame(fresh = true) {
 
 $('#urlForm').addEventListener('submit', (e) => {
   e.preventDefault();
+  state.navStack = [];
   loadFrame();
 });
+
+// ---------- 选择元素 / 浏览网页 ----------
+// 浏览模式下点网页，是在后台真实的网页上点（进入链接、切换标签页都行），点完再显示新的样子
+const MODE_HINTS = {
+  pick: '点击网页上的内容，选择要监测的元素',
+  browse: '像平常一样点链接进入别的页面，到了要监测的页面再切回「选择元素」',
+};
+
+function setFrameMode(mode) {
+  state.frameMode = mode;
+  for (const b of $('#modeSeg').children) b.classList.toggle('on', b.dataset.mode === mode);
+  $('#modeHint').textContent = MODE_HINTS[mode];
+  $('#btnBack').disabled = !state.navStack?.length;
+  if (frame.src) frame.contentWindow?.postMessage({ type: 'pw-mode', mode }, location.origin);
+}
+
+$('#modeSeg').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (b) setFrameMode(b.dataset.mode);
+});
+
+$('#btnBack').addEventListener('click', () => {
+  const prev = state.navStack.pop();
+  if (!prev) return;
+  $('#fUrl').value = prev;
+  $('#btnBack').disabled = !state.navStack.length;
+  loadFrame(false);
+});
+
+async function browseClick(d) {
+  const from = $('#fUrl').value.trim();
+  frame.classList.add('hidden');
+  $('#frameLoading').classList.remove('hidden');
+  $('#loadingText').textContent = d.text ? `正在点击「${d.text}」…` : '正在点击…';
+  $('#loadingTime').textContent = '';
+  try {
+    const r = await api('/browse/click', { method: 'POST', body: { url: from, selector: d.selector, href: d.href } });
+    if (r.url !== from) {
+      state.navStack.push(from);
+      $('#fUrl').value = r.url;
+    } else {
+      toast('网址没变。如果要监测的内容是点了以后才出现的，定时检查时可能读不到，保存前请点「真实读取测试」确认');
+    }
+    $('#btnBack').disabled = !state.navStack.length;
+    loadFrame(false);
+  } catch (err) {
+    toast(err.message, true);
+    $('#frameLoading').classList.add('hidden');
+    frame.classList.remove('hidden');
+  }
+}
 
 window.addEventListener('message', (e) => {
   if (e.origin !== location.origin || e.source !== frame.contentWindow) return;
@@ -471,12 +528,17 @@ window.addEventListener('message', (e) => {
     stopLoadingTimer();
     $('#frameLoading').classList.add('hidden');
     frame.classList.remove('hidden');
-    if (d.ok && !form.name.value) {
+    $('#modeBar').classList.toggle('hidden', !d.ok);
+    if (d.ok) setFrameMode(state.frameMode);
+    // 名称没填，或还是之前自动填的网页标题（浏览到了别的页面），就换成现在网页的标题
+    if (d.ok && (!form.name.value || form.name.value === state.autoName)) {
       try {
-        form.name.value = frame.contentDocument.title.trim().slice(0, 60);
+        form.name.value = state.autoName = frame.contentDocument.title.trim().slice(0, 60);
       } catch {}
     }
     if (d.ok && form.selector.value) frame.contentWindow.postMessage({ type: 'pw-highlight', selector: form.selector.value }, location.origin);
+  } else if (d.type === 'pw-click') {
+    browseClick(d);
   } else if (d.type === 'pw-pick' && state.pickTarget === 'download') {
     form.downloadSelector.value = d.selector;
     setPickTarget('main');
@@ -946,7 +1008,7 @@ function notesToHtml(md) {
     const item = line.match(/^[-*]\s+(.*)/);
     if (item && !inList) (out += '<ul>'), (inList = true);
     if (!item && inList) (out += '</ul>'), (inList = false);
-    if (item) out += `<li>${item[1].replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')}</li>`;
+    if (item) out += `<li>${item[1].replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`(.+?)`/g, '<code>$1</code>')}</li>`;
     else if (/^#+\s/.test(line)) out += `<div><b>${line.replace(/^#+\s/, '')}</b></div>`;
     else if (line) out += `<div>${line}</div>`;
   }
@@ -996,8 +1058,40 @@ function renderRollback(backups) {
   });
 }
 
+// 更新日志：项目里的 CHANGELOG.md，按“## v1.2.3 — 日期”分成一个个版本
+async function renderChangelog() {
+  const box = $('#changelogBox');
+  if (box.dataset.loaded) return;
+  try {
+    const { text } = await api('/changelog');
+    const releases = text
+      .split(/^## /m)
+      .slice(1)
+      .map((sec) => {
+        const [head, ...body] = sec.split(/\r?\n/);
+        const [, version = head, date = ''] = head.match(/^v?([\d.]+)\s*(?:[—-]+\s*(.*))?/) || [];
+        return { version, date, notes: body.join('\n').trim() };
+      });
+    box.innerHTML =
+      '<h3>更新日志</h3>' +
+      releases
+        .map(
+          (rel) => `
+      <div class="release ${rel.version === state.version ? 'current' : ''}">
+        <div class="release-head"><b>v${esc(rel.version)}${rel.version === state.version ? '<span class="tag">当前版本</span>' : ''}</b><span class="small muted">${esc(rel.date)}</span></div>
+        ${notesToHtml(rel.notes)}
+      </div>`
+        )
+        .join('');
+    box.dataset.loaded = '1';
+  } catch (err) {
+    box.innerHTML = `<p class="small muted">更新日志读取失败：${esc(err.message)}</p>`;
+  }
+}
+
 async function openUpdateTab() {
   $('#curVersion').textContent = 'v' + state.version;
+  renderChangelog();
   const s = await api('/update/status').catch(() => null);
   if (s && s.state === 'running') return watchUpdate(s);
   $('#updateProgress').classList.add('hidden');
@@ -1109,6 +1203,20 @@ function showApp(data) {
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
   scheduleRefresh();
+  showWhatsNew();
+}
+
+// 刚更新到新版本时，自动打开「版本更新」，让人看到这次更新了什么
+function showWhatsNew() {
+  let seen = null;
+  try {
+    seen = localStorage.getItem('pw-seen-version');
+    localStorage.setItem('pw-seen-version', state.version);
+  } catch {}
+  if (seen && seen !== state.version) {
+    toast(`已更新到 v${state.version}，下面是这次的更新内容`);
+    $('#verBadge').click();
+  }
 }
 
 async function boot() {

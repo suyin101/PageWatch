@@ -335,7 +335,23 @@ app.post(
   wrap((req, res) => res.json(store.importData(store.readBackup(req.params.name), 'replace')))
 );
 
+// 预览网页里的“浏览网页”模式：在后台真实网页上点一下，返回点完后的网址
+app.post(
+  '/api/browse/click',
+  wrap(async (req, res) => {
+    const b = req.body;
+    validate({ url: b.url, selector: b.selector }, false);
+    const href = /^https?:\/\//i.test(b.href || '') ? b.href : '';
+    res.json({ url: await browser.clickInSession(b.url, b.selector, href) });
+  })
+);
+
 // ---------- 在线更新 ----------
+// 网站里显示的更新日志，就是项目里的 CHANGELOG.md（每次发布都会写好）
+app.get(
+  '/api/changelog',
+  wrap((req, res) => res.json({ text: fs.readFileSync(path.join(__dirname, 'CHANGELOG.md'), 'utf8') }))
+);
 app.get('/api/update/check', wrap(async (req, res) => res.json(await updater.check({ force: req.query.force === '1' }))));
 app.get('/api/update/status', (req, res) => res.json({ ...updater.getStatus(), backups: updater.listBackups() }));
 app.post('/api/update/apply', wrap(async (req, res) => res.json(await updater.apply(req.body.version))));

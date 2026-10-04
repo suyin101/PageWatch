@@ -6,7 +6,7 @@
 - `server.js` — Express 服务 + 全部 API，读取 `.env`。登录必需：账号（scrypt）和会话（只存令牌哈希）在 db.json；第一次访问走 `/api/setup`；同 IP 输错 5 次锁 10 分钟
 - `src/store.js` — JSON 文件存储（`data/db.json`），故意不用数据库，免得宝塔上编译原生模块
 - `src/browser.js` — Playwright Chromium：`readElement`（定时检查，屏蔽图片/字体）；`snapshot` 打开的网页会保留 5 分钟（sessions），`preview` 直接在上面读，几乎零等待。不要再等 networkidle 到超时，那是之前慢的主因
-- `src/picker.js` — 注入快照里的点选脚本，通过 postMessage 与面板通信；`/api/snapshot` 用 CSP nonce 只允许它执行
+- `src/picker.js` — 注入快照里的点选脚本，通过 postMessage 与面板通信；`/api/snapshot` 用 CSP nonce 只允许它执行。两种模式：pick 选元素；browse 把点击发给 `/api/browse/click`，由 `clickInSession` 在后台真实网页上点（处理跳转/新窗口/弹窗），网址变了就把 session 改记到新网址下，前端再用新网址 `fresh=0` 取快照
 - `src/extract.js` — 「只看哪部分」提取（版本号/数字/正则），UMD 写法，服务器和网页（/extract.js）共用同一份
 - `src/rules.js` — 判断规则 changed / gt / lt / increased
 - `src/checker.js` — 每 20 秒扫一次到期的监测，并发 2
@@ -18,7 +18,7 @@
 - `public/` — 无构建步骤的原生 HTML/CSS/JS 前端
 
 ## 发布新版本
-- 在 CHANGELOG.md 写好 `## vX.Y.Z — 日期` 一节，然后 `npm run release -- X.Y.Z`（改版本号、提交、打标签、git archive 打包 + sha256、推送、gh release create）
+- 在 CHANGELOG.md 写好 `## vX.Y.Z — 日期` 一节（网站「设置 → 版本更新」通过 `/api/changelog` 直接显示这个文件，所以每个版本都必须写，用户能看懂的大白话），然后 `npm run release -- X.Y.Z`（改版本号、提交、打标签、git archive 打包 + sha256、推送、gh release create）
 - 版本号：新功能加中间位，修 bug 加末位
 - 服务器在国内，GitHub 可能慢；更新包要小，别把大文件提交进仓库
 
