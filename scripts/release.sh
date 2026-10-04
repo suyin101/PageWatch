@@ -16,7 +16,7 @@ NOTES=$(awk -v tag="## ${TAG}" 'index($0, tag) == 1 {on=1; next} /^## v/ {on=0} 
 
 npm version "${VER}" --no-git-tag-version >/dev/null
 git add -A
-git commit -qm "发布 ${TAG}"
+git commit -qm "发布 ${TAG}" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git tag -a "${TAG}" -m "PageWatch ${TAG}"
 
 mkdir -p dist
