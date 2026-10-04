@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")/.."
 OUT="$HOME/Desktop/pagewatch.zip"
 rm -f "$OUT"
-EXCLUDE=(-x "node_modules/*" -x ".git/*" -x ".env" -x "*.DS_Store" -x "data/*.tmp")
+EXCLUDE=(-x "node_modules/*" -x ".git/*" -x "dist/*" -x ".update/*" -x ".env" -x "*.DS_Store" -x "data/*.tmp")
 if [ "$1" = "--with-data" ]; then
   echo "⚠️  带上数据：Mac 上的监测、通知设置、登录账号会一起打包，解压到服务器会覆盖那边的数据"
 else
