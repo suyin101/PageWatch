@@ -29,5 +29,6 @@
 - 备份不含登录账号；导入/恢复前先自动备份（before-restore-*），每日自动备份 auto-日期.json 保留 7 份
 - 状态 `updated` 会一直保留，直到用户点“已处理”（`/ack`）
 - 出错只在刚开始出错时通知一次
+- 检查用的浏览器带 `--disable-blink-features=AutomationControlled`，并把各网站 Cookie 存到 data/cookies.json 下次带上（B 站风控 -352 对“每次都是新访客”很敏感）。测试 B 站别太频繁，IP 会被限流（-799/-352），结果就不准了
 - 运行：`npm start`，默认端口 3600
 - 部署：`npm run pack`（默认不带 data，首次搬家用 `--with-data`）→ 服务器首次 `bash deploy/install.sh`，更新用 `bash deploy/update.sh`（国内镜像、自动识别 apt/dnf、找宝塔的 /www/server/nodejs）。playwright 锁定版本，升级前先确认 npmmirror 上有对应浏览器版本；服务器上 `PLAYWRIGHT_BROWSERS_PATH=0` 把浏览器装在项目内

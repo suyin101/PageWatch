@@ -27,6 +27,8 @@ const LAUNCH_ARGS = [
   '--mute-audio',
   '--no-first-run',
   '--renderer-process-limit=4',
+  // 去掉“我是自动程序”的标记（navigator.webdriver），B 站等网站会据此拦截
+  '--disable-blink-features=AutomationControlled',
 ];
 
 let browserPromise = null;
@@ -70,9 +72,42 @@ setInterval(async () => {
   if (b) await b.close().catch(() => {});
 }, 60_000).unref();
 
+// ---------- 记住网站的 Cookie ----------
+// 每次检查都用全新的浏览器，在网站眼里每次都是“陌生访客”，B 站这类网站很容易把它当成爬虫拦掉。
+// 把网站发的 Cookie 记下来（只记 Cookie，不含账号密码），下次检查带上，像同一个老访客。存在 data/cookies.json
+const COOKIE_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'cookies.json');
+const MAX_COOKIES = 2000;
+let cookieJar = new Map(); // name|domain|path -> cookie
+try {
+  for (const c of JSON.parse(fs.readFileSync(COOKIE_FILE, 'utf8'))) cookieJar.set(`${c.name}|${c.domain}|${c.path}`, c);
+} catch {}
+let cookieTimer = null;
+
+function savedCookies() {
+  const now = Date.now() / 1000;
+  return [...cookieJar.values()].filter((c) => c.expires === -1 || c.expires > now);
+}
+
+async function rememberCookies(context) {
+  const list = await context.cookies().catch(() => []);
+  if (!list.length) return;
+  for (const c of list) cookieJar.set(`${c.name}|${c.domain}|${c.path}`, c);
+  if (cookieJar.size > MAX_COOKIES) cookieJar = new Map([...cookieJar].slice(-MAX_COOKIES));
+  clearTimeout(cookieTimer);
+  cookieTimer = setTimeout(() => {
+    try {
+      fs.writeFileSync(COOKIE_FILE, JSON.stringify(savedCookies()));
+    } catch {}
+  }, 2000);
+}
+
 async function newContext() {
   const browser = await getBrowser();
-  return browser.newContext({ userAgent: UA, locale: 'zh-CN', viewport: { width: 1366, height: 900 } });
+  const context = await browser.newContext({ userAgent: UA, locale: 'zh-CN', viewport: { width: 1366, height: 900 } });
+  const cookies = savedCookies();
+  // 一次加不进去（个别 Cookie 格式不对）就一个个加，跳过有问题的
+  if (cookies.length) await context.addCookies(cookies).catch(() => Promise.all(cookies.map((c) => context.addCookies([c]).catch(() => {}))));
+  return context;
 }
 
 function withTimeout(promise, ms, message) {
@@ -201,6 +236,7 @@ async function readElementOnce(url, selector, attribute, { downloadSelector } = 
     }
     return { raw, downloadUrl: await readDownload(page, downloadSelector) };
   } finally {
+    await rememberCookies(context);
     await context.close();
   }
 }
@@ -517,6 +553,8 @@ async function preview(url, selector, attribute, { downloadSelector } = {}) {
 
 // 关掉编辑窗口时调用：编辑用的网页全部关掉，立刻释放内存
 async function closeSessions() {
+  const c = editContextPromise && (await editContextPromise.catch(() => null));
+  if (c) await rememberCookies(c);
   for (const url of [...sessions.keys()]) await closeSession(url);
 }
 
