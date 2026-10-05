@@ -429,6 +429,7 @@ function openEditor(m) {
   setPreview(raw ?? '还没选择元素', raw != null);
   $('#fUrl').value = m?.url || '';
   state.navStack = [];
+  state.warnedSameUrl = false;
   setFrameMode('pick');
   $('#modeBar').classList.add('hidden');
   frame.classList.add('hidden');
@@ -450,12 +451,14 @@ const LOADING_STEPS = [
 let stopLoadingTimer = () => {};
 
 // fresh=false：编辑时如果这个网页几分钟内打开过，直接用，不再重新加载
-function loadFrame(fresh = true) {
+// keepPage：浏览时点了链接，加载新页面期间旧页面不消失，只盖一层半透明的“加载中”，像平常浏览网页一样
+function loadFrame(fresh = true, { keepPage = false } = {}) {
   const url = $('#fUrl').value.trim();
   if (!url) return;
   $('#frameTip').classList.add('hidden');
   $('#frameLoading').classList.remove('hidden');
-  frame.classList.add('hidden');
+  $('#frameLoading').classList.toggle('overlay', keepPage);
+  if (!keepPage) frame.classList.add('hidden');
   stopLoadingTimer();
   stopLoadingTimer = startTimer((sec) => {
     $('#loadingText').textContent = LOADING_STEPS.filter(([t]) => sec >= t).pop()[1];
@@ -539,10 +542,14 @@ async function verifyPick(d, field) {
 
 async function browseClick(d) {
   const from = $('#fUrl').value.trim();
-  frame.classList.add('hidden');
   $('#frameLoading').classList.remove('hidden');
-  $('#loadingText').textContent = d.text ? `正在点击「${d.text}」…` : '正在点击…';
+  $('#frameLoading').classList.add('overlay');
+  $('#loadingText').textContent = '正在打开…';
   $('#loadingTime').textContent = '';
+  let scrollY = 0;
+  try {
+    scrollY = frame.contentWindow.scrollY;
+  } catch {}
   try {
     const r = await api('/browse/click', { method: 'POST', body: { url: from, selector: d.selector, href: d.href, pwi: d.pwi } });
     if (r.url !== from) {
@@ -553,14 +560,16 @@ async function browseClick(d) {
       if (host(r.url) !== host(from))
         toast(`已跳到另一个网站（${host(r.url)}）。如果不是你想去的页面（比如点到了广告），按「← 返回」`);
     } else {
-      toast('网址没变。如果要监测的内容是点了以后才出现的，定时检查时可能读不到，保存前请点「真实读取测试」确认');
+      // 同一个网页里切换了内容（比如标签页），回到刚才看的位置
+      state.restoreScroll = scrollY;
+      if (!state.warnedSameUrl) toast('网址没变。如果要监测的内容是点了以后才出现的，定时检查时可能读不到，保存前请点「真实读取测试」确认');
+      state.warnedSameUrl = true;
     }
     $('#btnBack').disabled = !state.navStack.length;
-    loadFrame(false);
+    loadFrame(false, { keepPage: true });
   } catch (err) {
     toast(err.message, true);
     $('#frameLoading').classList.add('hidden');
-    frame.classList.remove('hidden');
   }
 }
 
@@ -571,6 +580,8 @@ window.addEventListener('message', (e) => {
     stopLoadingTimer();
     $('#frameLoading').classList.add('hidden');
     frame.classList.remove('hidden');
+    if (state.restoreScroll) frame.contentWindow.scrollTo(0, state.restoreScroll);
+    state.restoreScroll = 0;
     $('#modeBar').classList.toggle('hidden', !d.ok);
     if (d.ok) setFrameMode(state.frameMode);
     // 网页自己跳转了的话（快照里记着跳转后的网址），换成跳转后的网址，定时检查直接打开它

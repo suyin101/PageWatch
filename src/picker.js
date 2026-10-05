@@ -1,14 +1,13 @@
-// 注入到网页快照里的“点选元素”脚本：鼠标悬停高亮，点击选中，生成 CSS 选择器
+// 注入到网页快照里的脚本：选元素模式下鼠标悬停高亮、点击选中、生成 CSS 选择器；浏览模式下和平常看网页一样
 (function () {
   const ORIGIN = location.origin;
   const send = (msg) => parent.postMessage(msg, ORIGIN);
 
   const style = document.createElement('style');
   style.textContent = `
-    .__pw-hover { outline: 2px dashed #f59e0b !important; outline-offset: 2px !important; cursor: crosshair !important; }
-    .__pw-picked { outline: 3px solid #2563eb !important; outline-offset: 2px !important; background: rgba(37,99,235,.12) !important; }
+    html:not(.__pw-browse) .__pw-hover { outline: 2px dashed #f59e0b !important; outline-offset: 2px !important; }
+    html:not(.__pw-browse) .__pw-picked { outline: 3px solid #2563eb !important; outline-offset: 2px !important; background: rgba(37,99,235,.12) !important; }
     html:not(.__pw-browse) * { cursor: crosshair !important; }
-    .__pw-browse .__pw-hover { outline: 2px solid #16a34a !important; cursor: pointer !important; }
   `;
   document.head.appendChild(style);
 
@@ -16,9 +15,14 @@
   let picked = null;
   // pick：点击是选元素；browse：点击是在后台真实网页上点一下（进入链接、切换标签页等）
   let mode = 'pick';
-  // 浏览模式下，点到按钮里的文字/图标，算作点按钮本身
-  const clickable = (el) =>
-    el.closest('a[href], button, summary, label, select, input, [role="button"], [role="tab"], [role="link"], [role="menuitem"], [tabindex]') || el;
+  // 浏览模式下能点的东西：链接、按钮等，点到里面的文字/图标算作点它本身。
+  // 网页原来的脚本都去掉了，没法知道哪些普通元素能点，就看网站有没有给它设“小手”鼠标
+  const clickable = (el) => {
+    const c = el.closest('a[href], button, summary, label, select, [role="button"], [role="tab"], [role="link"], [role="menuitem"]');
+    if (c) return c;
+    for (let n = el; n && n !== document.body; n = n.parentElement) if (getComputedStyle(n).cursor === 'pointer') return n;
+    return null;
+  };
 
   const { cssPath, text } = window.PWSelector; // 来自 selector.js，和后台共用
 
@@ -45,8 +49,8 @@
     'mouseover',
     (e) => {
       if (hovered) hovered.classList.remove('__pw-hover');
-      hovered = mode === 'browse' ? clickable(e.target) : e.target;
-      if (hovered !== picked) hovered.classList.add('__pw-hover');
+      hovered = mode === 'browse' ? null : e.target; // 浏览模式不画框，和平常看网页一样
+      if (hovered && hovered !== picked) hovered.classList.add('__pw-hover');
     },
     true
   );
@@ -65,11 +69,14 @@
     document.addEventListener(
       type,
       (e) => {
+        // 浏览模式：像平常一样，按下拖动能选中文字；点到普通文字什么也不发生
+        if (mode === 'browse' && (type === 'mousedown' || type === 'mouseup')) return;
+        const el = mode === 'browse' && type === 'click' ? clickable(e.target) : null;
+        if (mode === 'browse' && type === 'click' && !el) return;
         e.preventDefault();
         e.stopPropagation();
         if (type !== 'click') return;
         if (mode === 'pick') return pick(e.target);
-        const el = clickable(e.target);
         const a = el.closest('a[href]');
         const href = a && !/^javascript:/i.test(a.getAttribute('href')) ? a.href : '';
         send({ type: 'pw-click', selector: cssPath(el), pwi: el.getAttribute('data-pw-i'), href, text: text(el).slice(0, 40) });
