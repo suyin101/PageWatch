@@ -105,6 +105,7 @@ function bootstrap() {
     meta: meta(),
     settings: store.getSettings(),
     monitors: store.listMonitors().map(view),
+    browser: browser.status(),
   };
 }
 
@@ -215,7 +216,16 @@ app.post(
   })
 );
 
-app.get('/api/monitors', (req, res) => res.json(store.listMonitors().map(view)));
+// 列表每隔几秒刷新一次。数据没变就只回一句“没变”（304），网页也不用重画，省流量也省电脑
+app.get('/api/monitors', (req, res) => {
+  const b = browser.status();
+  res.setHeader('X-PW-Browser', encodeURIComponent(JSON.stringify(b)));
+  res.setHeader('Cache-Control', 'no-cache');
+  const etag = `"${store.getRev()}-${checker.signature()}-${b.state}"`;
+  res.setHeader('ETag', etag);
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  res.json(store.listMonitors().map(view));
+});
 
 app.get('/api/monitors/:id', (req, res) => {
   const m = store.getMonitor(req.params.id);
@@ -348,6 +358,12 @@ app.post(
     res.json({ url: await browser.clickInSession(b.url, b.selector, href, pwiOf(b)) });
   })
 );
+
+// 关掉编辑窗口：编辑用的网页都关掉，马上释放服务器内存
+app.post('/api/browse/close', wrap(async (req, res) => {
+  await browser.closeSessions();
+  res.json({ ok: true });
+}));
 
 // 选好元素后，到后台真实网页里核对，返回在真实网页上算出的选择器
 app.post(

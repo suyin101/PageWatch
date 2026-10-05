@@ -70,6 +70,11 @@ function openModal(id) {
 }
 function closeModal(id) {
   $('#' + id).classList.add('hidden');
+  // 关掉编辑窗口：卸掉预览网页（省你电脑的内存），也让服务器关掉后台打开的网页（省服务器内存）
+  if (id === 'editor') {
+    frame.removeAttribute('src');
+    fetch('/api/browse/close', { method: 'POST' }).catch(() => {});
+  }
 }
 document.addEventListener('click', (e) => {
   const c = e.target.closest('[data-close]');
@@ -232,18 +237,27 @@ $('#list').addEventListener('click', async (e) => {
         return openDetail(id);
       case 'edit':
         return openEditor(m);
+      // 下面几个操作先在页面上立刻改好（不等服务器），服务器出错再改回来，点了马上有反应
       case 'ack':
-        await api(`/monitors/${id}/ack`, { method: 'POST' });
+        m.status = m.lastError ? 'error' : 'ok';
+        render();
         toast('已标记为处理完成');
+        await api(`/monitors/${id}/ack`, { method: 'POST' });
         break;
-      case 'toggle':
-        await api(`/monitors/${id}`, { method: 'PUT', body: { enabled: !m.enabled } });
-        toast(m.enabled ? '已暂停' : '已启用');
+      case 'toggle': {
+        const enabled = !m.enabled;
+        m.enabled = enabled;
+        render();
+        toast(enabled ? '已启用' : '已暂停');
+        await api(`/monitors/${id}`, { method: 'PUT', body: { enabled } });
         break;
+      }
       case 'delete':
         if (!confirm(`确定删除“${m.name || m.url}”吗？历史记录也会一起删除。`)) return;
-        await api(`/monitors/${id}`, { method: 'DELETE' });
+        state.monitors = state.monitors.filter((x) => x.id !== id);
+        render();
         toast('已删除');
+        await api(`/monitors/${id}`, { method: 'DELETE' });
         break;
       case 'check': {
         m.checking = true;
@@ -257,18 +271,49 @@ $('#list').addEventListener('click', async (e) => {
   } catch (err) {
     toast(err.message, true);
   }
-  refresh();
+  refresh(true);
 });
 
+// 自动刷新：服务器的数据没变就不重画列表（用 ETag 判断），页面切到后台时暂停
 let refreshTimer;
-async function refresh() {
+async function refresh(force = false) {
   clearTimeout(refreshTimer);
+  if (document.hidden) return; // 回到这个页面时会马上刷新
   try {
-    state.monitors = await api('/monitors');
-    render();
+    const res = await fetch('/api/monitors', { cache: 'no-cache' });
+    if (res.status === 401) return showLogin();
+    if (!res.ok) throw new Error();
+    showBrowserStatus(res.headers.get('X-PW-Browser'));
+    const etag = res.headers.get('ETag');
+    // “几分钟前”这类时间要更新，所以就算没变化，每分钟也重画一次
+    if (force || !etag || etag !== state.etag || Date.now() - state.renderedAt > 60_000) {
+      state.monitors = await res.json();
+      state.etag = etag;
+      state.renderedAt = Date.now();
+      render();
+    }
     $('#refreshInfo').textContent = `自动刷新 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
   } catch {}
   scheduleRefresh();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && state.username) refresh();
+});
+
+// 浏览器组件丢失、正在重新下载时，在页面顶上提示
+function showBrowserStatus(header) {
+  let b = null;
+  try {
+    b = typeof header === 'string' ? JSON.parse(decodeURIComponent(header)) : header;
+  } catch {}
+  const el = $('#browserBanner');
+  if (!b || b.state === 'ok') return el.classList.add('hidden');
+  el.className = 'banner ' + (b.state === 'error' ? 'err' : '');
+  el.textContent =
+    b.state === 'error'
+      ? `⚠ ${b.message}。程序会在下次检查时自动再试；一直不行的话，把这段文字发给开发者`
+      : '⏳ ' + (b.message || '正在准备浏览器组件…') + ' 下载好之前，检查和加载网页会失败，好了以后自动恢复';
 }
 
 // 有正在检查的就刷新得勤一点
@@ -1230,8 +1275,13 @@ function updateProgress(s) {
   let pct = STEP_PCT[step];
   let text = (s.steps[step] || '') + '…';
   if (step === 0 && s.downloaded) {
-    pct = s.total ? (s.downloaded / s.total) * 55 : Math.min(50, s.downloaded / 20480);
-    text = `正在下载新版本　${fmtMB(s.downloaded)}${s.total ? ' / ' + fmtMB(s.total) : ''}`;
+    pct = Math.max(3, s.total ? (s.downloaded / s.total) * 55 : Math.min(50, s.downloaded / 20480));
+    text = `正在下载新版本${s.source ? `（${s.source}）` : ''}　${fmtMB(s.downloaded)}${s.total ? ' / ' + fmtMB(s.total) : ''}`;
+  } else if (step === 0) {
+    // 还没连上下载地址：进度条慢慢往前走一点，并说明在干什么，不会一直停在 0%
+    const waited = s.startedAt ? (Date.now() - new Date(s.startedAt)) / 1000 : 0;
+    pct = Math.min(3, 1 + waited / 10);
+    text = s.message && !/^下载新版本/.test(s.message) ? s.message : '正在连接下载服务器（GitHub 或国内加速地址）…';
   }
   setProgress(pct, text);
 }
@@ -1304,6 +1354,7 @@ function showApp(data) {
   $('#btnLogout').title = `退出登录（${data.username}）`;
   state.version = data.version;
   renderVersionBadge();
+  showBrowserStatus(data.browser);
   // 后台悄悄检查一下有没有新版本，有的话在版本号上提示
   api('/update/check')
     .then((r) => {

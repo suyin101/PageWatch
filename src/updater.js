@@ -10,7 +10,7 @@ const WORK_DIR = path.join(APP_DIR, '.update');
 const BACKUP_DIR = path.join(WORK_DIR, 'backups');
 const KEEP_BACKUPS = 3;
 // 这些不属于程序本身，更新和备份都不碰
-const KEEP = new Set(['node_modules', 'data', '.env', '.update', '.git', '.user.ini']);
+const KEEP = new Set(['node_modules', 'data', '.env', '.update', '.git', '.user.ini', '.browsers']);
 
 const REPO = process.env.UPDATE_REPO || 'suyin101/PageWatch';
 const API = process.env.UPDATE_API || 'https://api.github.com';
@@ -119,31 +119,82 @@ function sha256(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
-// onProgress(已下载字节, 总字节)：给页面显示下载进度用，总大小未知时为 0
+const HEADER_TIMEOUT = 30_000; // 连上一个下载地址最多等 30 秒
+const STAGGER_MS = 6_000; // 一个地址 6 秒没反应，就同时试下一个
+const STALL_MS = 20_000; // 下载中途 20 秒没有新数据，就换别的地址
+
+const label = (prefix) => (prefix ? prefix.replace(/^https?:\/\//, '').replace(/\/$/, '') : 'GitHub');
+
+// 同时（错开几秒）去连几个下载地址，谁先有回应就用谁，其他的取消。
+// 国内服务器直连 GitHub 经常卡很久，以前要干等 90 秒才换加速地址，进度条一直是 0%
+function firstResponse(prefixes, url, errors) {
+  return new Promise((resolve) => {
+    let done = false;
+    let pending = prefixes.length;
+    const tries = [];
+    prefixes.forEach((prefix, i) => {
+      const ctrl = new AbortController();
+      const t = { prefix, ctrl, timer: null };
+      tries.push(t);
+      t.timer = setTimeout(async () => {
+        if (done) return;
+        const kill = setTimeout(() => ctrl.abort(new Error('连接超时')), HEADER_TIMEOUT);
+        try {
+          const res = await fetch(prefix + url, { headers: { 'User-Agent': 'PageWatch-Updater' }, signal: ctrl.signal });
+          clearTimeout(kill);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          if (done) return ctrl.abort();
+          done = true;
+          for (const o of tries) if (o !== t) clearTimeout(o.timer), o.ctrl.abort();
+          resolve({ prefix, res, ctrl, failed: prefixes.filter((p) => errors.some((e) => e.prefix === p)) });
+        } catch (e) {
+          clearTimeout(kill);
+          if (!done) errors.push({ prefix, message: e.message || String(e) });
+          if (--pending === 0 && !done) resolve(null);
+        }
+      }, i * STAGGER_MS);
+    });
+  });
+}
+
+// 读取下载内容；中途长时间没有新数据就放弃这个地址
+async function readBody({ res, ctrl }, onProgress) {
+  const total = Number(res.headers.get('content-length')) || 0;
+  const chunks = [];
+  let got = 0;
+  let stall = setTimeout(() => ctrl.abort(new Error('下载卡住了')), STALL_MS);
+  onProgress?.(0, total);
+  try {
+    for await (const chunk of res.body) {
+      clearTimeout(stall);
+      stall = setTimeout(() => ctrl.abort(new Error('下载卡住了')), STALL_MS);
+      chunks.push(chunk);
+      got += chunk.length;
+      onProgress?.(got, total);
+    }
+  } finally {
+    clearTimeout(stall);
+  }
+  if (total && got < total) throw new Error('下载不完整');
+  return Buffer.concat(chunks);
+}
+
+// onProgress(已下载字节, 总字节, 来源)：给页面显示下载进度用，总大小未知时为 0
 async function download(url, { allowMirrors, onProgress }) {
-  const candidates = ['', ...(allowMirrors ? MIRRORS : [])];
+  let remaining = ['', ...(allowMirrors ? MIRRORS : [])];
   const errors = [];
-  for (const prefix of candidates) {
+  while (remaining.length) {
+    const win = await firstResponse(remaining, url, errors);
+    if (!win) break;
+    remaining = remaining.filter((p) => p !== win.prefix && !win.failed.includes(p));
     try {
-      const res = await fetch(prefix + url, { headers: { 'User-Agent': 'PageWatch-Updater' }, signal: AbortSignal.timeout(90_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      if (!onProgress) return Buffer.from(await res.arrayBuffer());
-      const total = Number(res.headers.get('content-length')) || 0;
-      const chunks = [];
-      let got = 0;
-      onProgress(0, total);
-      for await (const chunk of res.body) {
-        chunks.push(chunk);
-        got += chunk.length;
-        onProgress(got, total);
-      }
-      return Buffer.concat(chunks);
+      return await readBody(win, onProgress && ((got, total) => onProgress(got, total, label(win.prefix))));
     } catch (e) {
-      errors.push(`${prefix || '直连 GitHub'}：${e.message}`);
-      if (prefix === '' && candidates.length > 1) setStep(0, '直连 GitHub 下载失败，换加速地址重试…');
+      errors.push({ prefix: win.prefix, message: e.message || String(e) });
+      if (remaining.length) setStep(0, `从 ${label(win.prefix)} 下载失败，换别的地址重试…`);
     }
   }
-  throw new Error('下载失败（' + errors.join('；') + '）');
+  throw new Error('下载失败（' + errors.map((e) => `${label(e.prefix)}：${e.message}`).join('；') + '）');
 }
 
 // 运行命令，返回输出；失败时带上最后几行输出方便排查
@@ -184,16 +235,6 @@ function readPkg(dir) {
   return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
 }
 
-// 依赖清单的指纹。忽略里面 PageWatch 自己的版本号，只有依赖真的变了才需要重新安装
-function lockHash(dir) {
-  const f = path.join(dir, 'package-lock.json');
-  if (!fs.existsSync(f)) return '';
-  const lock = JSON.parse(fs.readFileSync(f, 'utf8'));
-  delete lock.version;
-  if (lock.packages?.['']) delete lock.packages[''].version;
-  return sha256(JSON.stringify(lock));
-}
-
 async function installDeps(oldPkg, newPkg, { lockChanged }) {
   if (lockChanged) {
     setStep(5, '依赖有变化，正在安装（国内镜像）…');
@@ -203,8 +244,9 @@ async function installDeps(oldPkg, newPkg, { lockChanged }) {
   if (oldPkg.dependencies?.playwright !== newPkg.dependencies?.playwright) {
     setStep(5, '浏览器组件有新版本，正在下载浏览器（约 120MB）…');
     const npx = path.join(path.dirname(npmBin()), 'npx');
+    // 装到项目的 .browsers 里，以后重新安装依赖也不会被删
     await run(fs.existsSync(npx) ? npx : 'npx', ['playwright', 'install', '--only-shell', 'chromium'], {
-      env: { PLAYWRIGHT_DOWNLOAD_HOST: PLAYWRIGHT_MIRROR },
+      env: { PLAYWRIGHT_DOWNLOAD_HOST: PLAYWRIGHT_MIRROR, PLAYWRIGHT_BROWSERS_PATH: path.join(APP_DIR, '.browsers') },
     });
   }
 }
@@ -251,7 +293,6 @@ async function apply(targetVersion) {
 
 async function doApply(rel) {
   const oldPkg = readPkg(APP_DIR);
-  const oldLock = lockHash(APP_DIR);
   const backup = path.join(BACKUP_DIR, `v${oldPkg.version}-${Date.now()}`);
   let backedUp = false;
   let filesReplaced = false;
@@ -266,7 +307,7 @@ async function doApply(rel) {
     }
     const file = await download(rel.asset.url, {
       allowMirrors: !!expected,
-      onProgress: (got, total) => (status = { ...status, downloaded: got, total }),
+      onProgress: (got, total, source) => (status = { ...status, downloaded: got, total, source }),
     });
 
     // 2. 校验
@@ -299,7 +340,9 @@ async function doApply(rel) {
 
     // 6. 依赖
     setStep(5, '检查依赖…');
-    const lockChanged = lockHash(APP_DIR) !== oldLock;
+    // 只看 package.json 里的依赖有没有变。服务器上的 package-lock.json 常被 npm 改写（比如换了镜像地址），
+    // 拿它比较会误以为依赖变了，重新安装依赖时会把装在 node_modules 里的浏览器一起删掉
+    const lockChanged = JSON.stringify(oldPkg.dependencies || {}) !== JSON.stringify(newPkg.dependencies || {});
     depsTouched = lockChanged;
     await installDeps(oldPkg, newPkg, { lockChanged });
     await fixOwner();
@@ -337,13 +380,13 @@ async function rollback() {
   const [latest] = listBackups();
   if (!latest) throw new Error('没有可以回退的备份');
   const dir = path.join(BACKUP_DIR, latest.id);
-  const oldLock = lockHash(APP_DIR);
   const oldPkg = readPkg(APP_DIR);
   status = { state: 'running', from: oldPkg.version, to: latest.version, rollback: true };
   try {
     setStep(4, `正在恢复 v${latest.version} 的文件…`);
     copyApp(dir, APP_DIR);
-    await installDeps(oldPkg, readPkg(APP_DIR), { lockChanged: lockHash(APP_DIR) !== oldLock });
+    const newPkg = readPkg(APP_DIR);
+    await installDeps(oldPkg, newPkg, { lockChanged: JSON.stringify(oldPkg.dependencies || {}) !== JSON.stringify(newPkg.dependencies || {}) });
     await fixOwner();
     fs.rmSync(dir, { recursive: true, force: true }); // 用掉的备份删除，避免反复回到同一个版本
     cache = null;
@@ -356,4 +399,4 @@ async function rollback() {
   return getStatus();
 }
 
-module.exports = { currentVersion, check, apply, rollback, getStatus, listBackups };
+module.exports = { currentVersion, check, apply, rollback, getStatus, listBackups, _download: download };

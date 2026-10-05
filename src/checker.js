@@ -6,7 +6,9 @@ const { extract } = require('./extract');
 const { notify } = require('./notify');
 
 const TICK_MS = 20_000;
-const CONCURRENCY = 2; // 同时最多开几个网页，服务器内存小就调低
+// 同时最多检查几个网页。每个网页要占 100~300MB 内存：内存不到 3GB 的服务器一次只查一个，免得把服务器拖慢。
+// 可以在 .env 里用 CHECK_CONCURRENCY 指定
+const CONCURRENCY = Number(process.env.CHECK_CONCURRENCY) || (require('os').totalmem() < 3 * 1024 ** 3 ? 1 : 2);
 const FAIL_THRESHOLD = 3; // 连续失败几次才算真的出错，避免偶尔的网络抖动也来打扰
 const RETRY_MS = 2 * 60_000; // 失败后多久重试
 const WAKE_GRACE_MS = 30_000; // 电脑刚醒来时网络还没连上，先等一会儿再检查
@@ -120,4 +122,7 @@ function isChecking(id) {
   return running.has(id) || queue.includes(id);
 }
 
-module.exports = { start, enqueue, checkMonitor, isChecking };
+// 哪些正在检查/排队，网页据此判断列表有没有变化
+const signature = () => [...running, '|', ...queue].join(',');
+
+module.exports = { start, enqueue, checkMonitor, isChecking, signature };

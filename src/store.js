@@ -38,12 +38,28 @@ function load() {
   };
 }
 
+// 数据改了就记一下，半秒内的多次修改合并成一次写文件。监测多了以后，每次检查都把整个文件重写一遍太费劲。
+// 程序退出（包括在线更新重启）前会把没写的立刻写完
+let rev = 0; // 数据版本号，每改一次加 1，网页据此判断列表有没有变化
+let saveTimer = null;
+
 function save() {
+  rev++;
+  if (!saveTimer) saveTimer = setTimeout(flush, 500);
+}
+
+function flush() {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
   // 先写临时文件再改名，避免写到一半断电把数据写坏
   const tmp = DB_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(db));
   fs.renameSync(tmp, DB_FILE);
 }
+process.on('exit', flush);
+
+const getRev = () => rev;
 
 // ---------- 登录账号 ----------
 const SESSION_DAYS = 30;
@@ -342,6 +358,8 @@ function pick(obj, keys) {
 }
 
 module.exports = {
+  flush,
+  getRev,
   hasAccount,
   getUsername,
   setAccount,

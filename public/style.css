@@ -359,3 +359,6 @@ a.btn, label.btn { display: inline-block; text-decoration: none; margin: 0; font
 .pbar-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
 /* 浏览时加载新页面：旧页面还在，上面盖一层半透明 */
 .frame-loading.overlay { background: rgba(255, 255, 255, .6); backdrop-filter: blur(1px); z-index: 1; }
+/* 页面顶上的提示条 */
+.banner { margin-bottom: 14px; padding: 10px 14px; border-radius: 10px; background: #fef3c7; color: #92400e; font-size: 14px; }
+.banner.err { background: #fee2e2; color: #991b1b; }

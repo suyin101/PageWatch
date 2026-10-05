@@ -8,8 +8,8 @@ cd "$(dirname "$0")/.."
 APP_DIR=$(pwd)
 NPM_MIRROR=https://registry.npmmirror.com
 export PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright
-# 浏览器装在项目目录里，宝塔用 www 用户运行时也能用
-export PLAYWRIGHT_BROWSERS_PATH=0
+# 浏览器装在项目的 .browsers 文件夹里：宝塔用 www 用户运行时也能用，重新安装依赖也不会被删
+export PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/.browsers"
 
 step() { echo; echo "==== $1 ===="; }
 fail() { echo; echo "❌ $1"; exit 1; }
@@ -63,7 +63,6 @@ if [ ! -f .env ]; then
   cp .env.example .env
   echo "已生成 .env（端口 3600）"
 fi
-grep -q '^PLAYWRIGHT_BROWSERS_PATH=' .env || printf '\n# 浏览器装在项目目录里（安装脚本自动添加）\nPLAYWRIGHT_BROWSERS_PATH=0\n' >> .env
 mkdir -p data
 # 宝塔的 Node 项目默认用 www 用户运行，让它能读写项目文件
 # 宝塔网站目录里的 .user.ini 被锁定（防跨站），改不了归属，忽略它即可

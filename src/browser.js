@@ -2,42 +2,84 @@
 const fs = require('fs');
 const path = require('path');
 
-// 服务器上的安装脚本把浏览器装在项目里（node_modules/playwright-core/.local-browsers）。
-// 发现有的话就用它，不依赖 .env 里的 PLAYWRIGHT_BROWSERS_PATH，免得找到 /root/.cache 去
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
-  const local = path.join(path.dirname(require.resolve('playwright-core/package.json')), '.local-browsers');
-  if (fs.existsSync(local)) process.env.PLAYWRIGHT_BROWSERS_PATH = '0';
-}
-
+// 先定好浏览器在哪（丢了会自动重新下载），再加载 Playwright
+const chromiumFiles = require('./chromium');
 const { chromium } = require('playwright');
 
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const NAV_TIMEOUT = 45_000;
 const SELECTOR_TIMEOUT = 15_000;
-const SESSION_IDLE_MS = 5 * 60_000; // 编辑时打开的网页保留 5 分钟，方便马上试读
-const MAX_SESSIONS = 3;
+const SESSION_IDLE_MS = 3 * 60_000; // 编辑时打开的网页保留 3 分钟，方便马上试读；关掉编辑窗口就立刻关
+const MAX_SESSIONS = 2;
+const CHECK_TIMEOUT = 90_000; // 一次检查最多 90 秒，网页卡死也不会一直占着
+const BROWSER_IDLE_MS = 3 * 60_000; // 浏览器闲着 3 分钟就关掉，把内存还给服务器，要用时再开（约 1 秒）
+
+// 省内存的启动参数。宝塔/Linux 上一般以 root 或 www 运行，需要 --no-sandbox
+const LAUNCH_ARGS = [
+  '--no-sandbox',
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--disable-extensions',
+  '--disable-background-networking',
+  '--disable-default-apps',
+  '--disable-sync',
+  '--mute-audio',
+  '--no-first-run',
+  '--renderer-process-limit=4',
+];
 
 let browserPromise = null;
+let busy = 0; // 正在进行的检查数
+let lastUsed = Date.now();
+
+async function launch() {
+  await chromiumFiles.ensure();
+  try {
+    return await chromium.launch({ args: LAUNCH_ARGS });
+  } catch (e) {
+    // 浏览器文件被删了（比如被重新安装依赖），重新下载后再试一次
+    if (!chromiumFiles.isMissingError(e)) throw e;
+    await chromiumFiles.install();
+    return chromium.launch({ args: LAUNCH_ARGS });
+  }
+}
 
 async function getBrowser() {
+  lastUsed = Date.now();
   if (browserPromise) {
     const b = await browserPromise.catch(() => null);
     if (b && b.isConnected()) return b;
   }
-  // 宝塔/Linux 服务器上一般以 root 运行，需要 --no-sandbox
-  browserPromise = chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+  browserPromise = launch();
   return browserPromise;
 }
 
-// 启动时先把浏览器打开，第一次检查就不用等浏览器启动
+// 启动时先准备好浏览器（丢了就先下载），第一次检查不用等
 function warmup() {
   getBrowser().catch((e) => console.error('[浏览器启动失败]', e.message));
 }
 
+// 闲着的浏览器关掉：没有在检查、没有打开着的编辑网页，并且有一阵子没用了
+setInterval(async () => {
+  if (!browserPromise || busy || sessions.size || Date.now() - lastUsed < BROWSER_IDLE_MS) return;
+  const p = browserPromise;
+  browserPromise = null;
+  editContextPromise = null;
+  const b = await p.catch(() => null);
+  if (b) await b.close().catch(() => {});
+}, 60_000).unref();
+
 async function newContext() {
   const browser = await getBrowser();
   return browser.newContext({ userAgent: UA, locale: 'zh-CN', viewport: { width: 1366, height: 900 } });
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(message)), ms)))]).finally(() =>
+    clearTimeout(timer)
+  );
 }
 
 async function gotoPage(page, url) {
@@ -131,7 +173,18 @@ function isJunk(req) {
 
 // 定时检查用：不加载图片、视频、字体，只要文字，所以更快。
 // 返回 { raw: 元素内容, downloadUrl: 下载链接或 null }
-async function readElement(url, selector, attribute, { downloadSelector } = {}) {
+async function readElement(url, selector, attribute, opts = {}) {
+  busy++;
+  try {
+    await chromiumFiles.ensure(); // 浏览器丢了先下载，下载时间不算在 90 秒里
+    return await withTimeout(readElementOnce(url, selector, attribute, opts), CHECK_TIMEOUT, '检查超时（超过 90 秒），网站太慢或卡住了');
+  } finally {
+    busy--;
+    lastUsed = Date.now();
+  }
+}
+
+async function readElementOnce(url, selector, attribute, { downloadSelector } = {}) {
   const context = await newContext();
   try {
     await context.route('**/*', (route) => (isJunk(route.request()) ? route.abort() : route.continue()));
@@ -462,6 +515,11 @@ async function preview(url, selector, attribute, { downloadSelector } = {}) {
   return { value: raw, downloadUrl, ms: Date.now() - started, live: false };
 }
 
+// 关掉编辑窗口时调用：编辑用的网页全部关掉，立刻释放内存
+async function closeSessions() {
+  for (const url of [...sessions.keys()]) await closeSession(url);
+}
+
 async function closeBrowser() {
   for (const url of [...sessions.keys()]) await closeSession(url);
   if (editContextPromise) await (await editContextPromise.catch(() => null))?.close().catch(() => {});
@@ -472,4 +530,4 @@ async function closeBrowser() {
   if (b) await b.close().catch(() => {});
 }
 
-module.exports = { readElement, snapshot, preview, clickInSession, locate, warmup, closeBrowser };
+module.exports = { readElement, snapshot, preview, clickInSession, locate, warmup, closeSessions, closeBrowser, status: chromiumFiles.getStatus };

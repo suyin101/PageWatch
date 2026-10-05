@@ -13,6 +13,8 @@ done
 export PATH="$(dirname "$NODE_BIN"):$PATH"
 echo "==== 安装依赖（国内镜像）===="
 npm install --omit=dev --registry=https://registry.npmmirror.com --no-audit --no-fund
+echo "==== 检查浏览器组件（丢了会自动下载，国内镜像）===="
+node -e "require('./src/chromium').ensure().then(() => console.log('浏览器组件正常'), (e) => { console.error(e.message); process.exit(1); })"
 id www >/dev/null 2>&1 && { chown -R www:www . 2>/dev/null || true; }
 echo
 echo "🎉 更新完成！最后一步：宝塔 → 网站 → Node项目 → PageWatch 那一行点「重启」"
