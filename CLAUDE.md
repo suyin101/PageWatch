@@ -28,6 +28,8 @@
 - 监测的 `lastValue` 是提取后用来比较的值，`lastRaw` 是原文；下载链接读不到不算出错
 - 备份不含登录账号；导入/恢复前先自动备份（before-restore-*），每日自动备份 auto-日期.json 保留 7 份
 - 状态 `updated` 会一直保留，直到用户点“已处理”（`/ack`）
+- 预览图片：快照加 no-referrer 让你的浏览器直连；加载失败的由 picker.js 改走 `/api/img`（服务器带原网页 Referer 代取，只转发 image/*，拒绝内网地址）
+- 编辑窗口关闭不清空：state.draftKey 记着是哪个监测/新建，再打开原样恢复；保存成功才清；关闭 5 分钟后卸掉 iframe
 - 出错只在刚开始出错时通知一次
 - 检查用的浏览器带 `--disable-blink-features=AutomationControlled`，并把各网站 Cookie 存到 data/cookies.json 下次带上（B 站风控 -352 对“每次都是新访客”很敏感）。测试 B 站别太频繁，IP 会被限流（-799/-352），结果就不准了
 - 运行：`npm start`，默认端口 3600

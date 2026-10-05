@@ -110,5 +110,20 @@
     }
   });
 
+  // 图片加载失败（网站防盗链、你的网络访问不到等），改由服务器代为获取，并带上原网页地址作为来源
+  const PAGE = document.baseURI;
+  function proxyImage(img) {
+    const src = img.currentSrc || img.src;
+    if (img.dataset.pwProxied || !/^https?:/.test(src)) return;
+    img.dataset.pwProxied = '1';
+    const pic = img.closest('picture');
+    if (pic) pic.querySelectorAll('source').forEach((s) => s.remove());
+    img.removeAttribute('srcset');
+    img.src = `${ORIGIN}/api/img?u=${encodeURIComponent(src)}&r=${encodeURIComponent(PAGE)}`;
+  }
+  document.addEventListener('error', (e) => e.target instanceof HTMLImageElement && proxyImage(e.target), true);
+  // 这段脚本运行前就已经失败了的图片
+  for (const img of document.images) if (img.complete && !img.naturalWidth && (img.currentSrc || img.src)) proxyImage(img);
+
   send({ type: 'pw-loaded', ok: true });
 })();

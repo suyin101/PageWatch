@@ -70,10 +70,14 @@ function openModal(id) {
 }
 function closeModal(id) {
   $('#' + id).classList.add('hidden');
-  // 关掉编辑窗口：卸掉预览网页（省你电脑的内存），也让服务器关掉后台打开的网页（省服务器内存）
+  // 关掉编辑窗口：先留着网页和填的内容，5 分钟内再打开不用重新加载；超过 5 分钟才卸掉预览网页
   if (id === 'editor') {
-    frame.removeAttribute('src');
-    fetch('/api/browse/close', { method: 'POST' }).catch(() => {});
+    clearTimeout(state.unloadTimer);
+    state.unloadTimer = setTimeout(() => {
+      frame.removeAttribute('src');
+      delete frame.dataset.url;
+      state.draftKey = null;
+    }, 5 * 60_000);
   }
 }
 document.addEventListener('click', (e) => {
@@ -446,7 +450,16 @@ function toggleThreshold() {
   $('#thresholdRow').classList.toggle('hidden', !['gt', 'lt'].includes(form.rule.value));
 }
 
+// 关掉编辑窗口（✕ 或取消）不丢东西：再打开同一个监测（或再点“新建”）时，网页和填了一半的内容原样还在，不用重新加载。
+// 保存成功后才清空。关着超过 5 分钟才卸掉预览网页（服务器那边闲置 3 分钟也会自己关）
 function openEditor(m) {
+  clearTimeout(state.unloadTimer);
+  const key = m ? m.id : 'new';
+  if (state.draftKey === key) {
+    openModal('editor');
+    return;
+  }
+  state.draftKey = key;
   state.editingId = m ? m.id : null;
   state.lastPick = null;
   state.autoName = null;
@@ -476,6 +489,12 @@ function openEditor(m) {
   state.navStack = [];
   state.warnedSameUrl = false;
   setFrameMode('pick');
+  // 预览里已经是这个网页（比如刚编辑过同一个网址），直接用，不重新加载
+  if (m && frame.getAttribute('src') && frame.dataset.url === m.url) {
+    openModal('editor');
+    if (form.selector.value) frame.contentWindow?.postMessage({ type: 'pw-highlight', selector: form.selector.value }, location.origin);
+    return;
+  }
   $('#modeBar').classList.add('hidden');
   frame.classList.add('hidden');
   frame.removeAttribute('src');
@@ -510,6 +529,7 @@ function loadFrame(fresh = true, { keepPage = false } = {}) {
     $('#loadingTime').textContent = sec ? `已用 ${sec} 秒` : '';
   });
   frame.src = `/api/snapshot?fresh=${fresh ? 1 : 0}&url=${encodeURIComponent(url)}`;
+  frame.dataset.url = url;
 }
 
 $('#urlForm').addEventListener('submit', (e) => {
@@ -633,7 +653,7 @@ window.addEventListener('message', (e) => {
     if (d.ok) {
       try {
         const real = frame.contentDocument.baseURI;
-        if (/^https?:/.test(real) && real !== $('#fUrl').value.trim()) $('#fUrl').value = real;
+        if (/^https?:/.test(real) && real !== $('#fUrl').value.trim()) $('#fUrl').value = frame.dataset.url = real;
       } catch {}
     }
     // 名称没填，或还是之前自动填的网页标题（浏览到了别的页面），就换成现在网页的标题
@@ -750,6 +770,7 @@ form.addEventListener('submit', async (e) => {
     if (state.editingId) await api(`/monitors/${state.editingId}`, { method: 'PUT', body });
     else await api('/monitors', { method: 'POST', body });
     closeModal('editor');
+    state.draftKey = null; // 保存了，下次打开从头开始（预览网页还在的话照样直接用）
     toast(state.editingId ? '已保存' : '已添加，正在进行第一次检查…');
     refresh();
   } catch (err) {
@@ -1293,11 +1314,16 @@ async function watchUpdate(s) {
   $('#updateProgress').classList.remove('hidden');
   $('#btnCheckUpdate').disabled = true;
   const stopTimer = startTimer((sec) => ($('#pbarTime').textContent = `已用 ${sec} 秒`));
+  const job = { from: s.from, to: s.to, rollback: s.rollback, steps: s.steps }; // 这次更新的信息，程序重启后服务器就不记得了
   while (s.state === 'running') {
     renderSteps(s);
     updateProgress(s);
     await new Promise((r) => setTimeout(r, 800));
-    s = await api('/update/status').catch(() => s);
+    const n = await api('/update/status').catch(() => null);
+    if (!n) continue; // 正在重启，连不上，接着等
+    // 服务器说“没在更新”：说明程序已经重启完了（重启太快，没来得及看到“更新完成”），当作装好了
+    if (n.state !== 'running' && n.state !== 'done' && n.state !== 'error') s = { ...job, state: 'done', step: 6 };
+    else s = { ...n, from: n.from || job.from, to: n.to || job.to, steps: n.steps || job.steps, rollback: n.rollback ?? job.rollback };
   }
   renderSteps(s);
   updateProgress(s);

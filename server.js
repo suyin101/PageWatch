@@ -345,6 +345,38 @@ app.post(
   wrap((req, res) => res.json(store.importData(store.readBackup(req.params.name), 'replace')))
 );
 
+// 预览网页里加载失败的图片，由服务器代取：带上原网页作为来源（绕过防盗链），只转发图片
+const net = require('net');
+const dns = require('dns').promises;
+async function isPrivateHost(host) {
+  const ips = net.isIP(host) ? [host] : (await dns.lookup(host, { all: true }).catch(() => [])).map((x) => x.address);
+  return !ips.length || ips.some((ip) => /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|0\.|::1$|f[cd]|fe80)/i.test(ip));
+}
+app.get('/api/img', async (req, res) => {
+  try {
+    const u = new URL(String(req.query.u));
+    if (!/^https?:$/.test(u.protocol) || (await isPrivateHost(u.hostname))) return res.status(400).end();
+    const r = await fetch(u, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        Referer: /^https?:\/\//.test(req.query.r || '') ? req.query.r : u.origin + '/',
+        Accept: 'image/avif,image/webp,image/*,*/*;q=0.8',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const type = r.headers.get('content-type') || '';
+    const size = Number(r.headers.get('content-length')) || 0;
+    if (!r.ok || !/^image\//i.test(type) || size > 10 * 1024 * 1024) return res.status(404).end();
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > 10 * 1024 * 1024) return res.status(404).end();
+    res.setHeader('Content-Type', type);
+    res.setHeader('Cache-Control', 'private, max-age=3600'); // 你的浏览器缓存 1 小时，重复打开不再经过服务器
+    res.end(buf);
+  } catch {
+    res.status(404).end();
+  }
+});
+
 // 快照里元素的编号（data-pw-i），不是数字就当没有
 const pwiOf = (b) => (/^\d+$/.test(String(b.pwi ?? '')) ? Number(b.pwi) : null);
 
