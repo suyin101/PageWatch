@@ -24,8 +24,18 @@ function defaultCache() {
   return path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'ms-playwright');
 }
 
-// 浏览器装好以后，版本目录里会有一个 INSTALLATION_COMPLETE 标记
-const hasBrowser = (dir) => fs.existsSync(path.join(dir, NEED, 'INSTALLATION_COMPLETE'));
+// 浏览器装好以后，版本目录里会有一个 INSTALLATION_COMPLETE 标记。
+// 光看标记不够：线上出过标记还在、程序本体却没了的情况，Playwright 会以为装好了跳过下载，
+// 所以还要确认 chrome-headless-shell 程序本身在。
+const EXE = process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell';
+function hasExe(dir) {
+  try {
+    return fs.readdirSync(path.join(dir, NEED)).some((sub) => fs.existsSync(path.join(dir, NEED, sub, EXE)));
+  } catch {
+    return false;
+  }
+}
+const hasBrowser = (dir) => fs.existsSync(path.join(dir, NEED, 'INSTALLATION_COMPLETE')) && hasExe(dir);
 
 // 依次看这些地方有没有装好的浏览器：.env 指定的、项目 .browsers、node_modules 里的、系统默认位置
 function locate() {
@@ -52,6 +62,10 @@ function install() {
   status = { state: 'installing', message: '浏览器组件丢失，正在自动重新下载（约 120MB，需要几分钟）…' };
   console.log('[浏览器] ' + status.message);
   installing = new Promise((resolve, reject) => {
+    // 装了一半或被删坏的版本目录先清掉，不然 Playwright 看到标记会直接跳过下载
+    try {
+      fs.rmSync(path.join(BROWSERS_DIR, NEED), { recursive: true, force: true });
+    } catch {}
     const p = spawn(process.execPath, [path.join(CORE_DIR, 'cli.js'), 'install', '--only-shell', 'chromium'], {
       cwd: APP_DIR,
       env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: BROWSERS_DIR, PLAYWRIGHT_DOWNLOAD_HOST: process.env.PLAYWRIGHT_DOWNLOAD_HOST || MIRROR },
