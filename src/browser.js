@@ -10,6 +10,7 @@ const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const NAV_TIMEOUT = 45_000;
 const SELECTOR_TIMEOUT = 15_000;
+const DOM_TIMEOUT = 20_000; // 网站开始返回后，最多等这么久让网页骨架出来，没出来也继续
 const SESSION_IDLE_MS = 3 * 60_000; // 编辑时打开的网页保留 3 分钟，方便马上试读；关掉编辑窗口就立刻关
 const MAX_SESSIONS = 2;
 const CHECK_TIMEOUT = 90_000; // 一次检查最多 90 秒，网页卡死也不会一直占着
@@ -117,18 +118,29 @@ function withTimeout(promise, ms, message) {
   );
 }
 
+// 只等网站开始返回网页就往下走，再最多等 DOM_TIMEOUT 让网页骨架出来。
+// 有的网站某个脚本在服务器上下载很慢（比如 B 站空间页的 CDN 脚本），网页会一直“没加载完”，
+// 以前要等它加载完才算打开，结果整页超时；现在没加载完也直接去找元素，元素出来了就算成功
+const slowPages = new WeakSet(); // 骨架一直没加载完的网页，找不到元素时报“网站太慢”而不是“网页改版”
+
 async function gotoPage(page, url) {
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    await page.goto(url, { waitUntil: 'commit', timeout: NAV_TIMEOUT });
   } catch (e) {
     // 连接偶尔被网站掐断（防火墙、网络抖动），隔一秒再试一次
     if (!/ERR_(CONNECTION_(RESET|CLOSED)|EMPTY_RESPONSE|HTTP2_PROTOCOL_ERROR|NETWORK_CHANGED)/.test(e.message)) throw new Error(friendlyError(e.message));
     await new Promise((r) => setTimeout(r, 1000));
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+      await page.goto(url, { waitUntil: 'commit', timeout: NAV_TIMEOUT });
     } catch (e2) {
       throw new Error(friendlyError(e2.message));
     }
+  }
+  try {
+    await page.waitForLoadState('domcontentloaded', { timeout: DOM_TIMEOUT });
+    slowPages.delete(page);
+  } catch {
+    slowPages.add(page);
   }
 }
 
@@ -142,7 +154,7 @@ function friendlyError(msg) {
     [/ERR_CONNECTION_(RESET|CLOSED)|ERR_EMPTY_RESPONSE/, '连接被网站中断，可能被网站拦截了'],
     [/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED/, '电脑没有联网'],
     [/ERR_CERT|SSL/, '网站的 HTTPS 证书有问题'],
-    [/Timeout/i, '网页打开超时（超过 45 秒）'],
+    [/Timeout/i, '网页打开超时（45 秒内网站一直没有响应）'],
   ];
   for (const [re, text] of known) if (re.test(msg)) return text;
   return '网页打开失败：' + msg.replace(/^page\.goto:\s*/, '').split('\n')[0];
@@ -158,6 +170,7 @@ async function readFromPage(page, selector, attribute, settleMs = 2500) {
   try {
     await loc.waitFor({ state: 'attached', timeout: SELECTOR_TIMEOUT });
   } catch {
+    if (slowPages.has(page)) throw new Error('网站加载太慢，等了很久要监测的部分还没出来（服务器访问这个网站的网络可能不好）');
     throw new Error('在网页上找不到这个元素，可能网页改版了，请重新选择元素');
   }
   // 元素出现后再稍等一下，让 JS 把内容填完整
@@ -230,7 +243,7 @@ async function readElementOnce(url, selector, attribute, { downloadSelector } = 
       raw = await readFromPage(page, selector, attribute);
     } catch (e) {
       // 有的网站偶尔不给内容（比如 B 站有时会返回反爬虫页面），刷新再试一次
-      if (!/找不到这个元素/.test(e.message)) throw e;
+      if (!/找不到这个元素|还没出来/.test(e.message)) throw e;
       await gotoPage(page, url);
       raw = await readFromPage(page, selector, attribute);
     }
