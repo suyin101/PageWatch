@@ -19,6 +19,7 @@
 - `src/updater.js` — 在线更新：GitHub Releases（默认 suyin101/PageWatch）→ 下载（失败换加速镜像，仅在有官方 sha256 指纹时）→ 校验 → 解压 → 备份到 .update/backups → 覆盖 → 依赖变了才 npm install → exit(99)。失败自动恢复。status 带 downloaded/total 给前端进度条；前端更新成功后写 localStorage pw-just-updated，刷新后弹出本版本更新内容
 - `scripts/reset-password.js` — 忘记密码时用（需先停服务）
 - `public/` — 无构建步骤的原生 HTML/CSS/JS 前端
+- iPhone App（另一个仓库，~/Projects/PageWatchApp）直接用这套 `/api` 接口（Cookie 登录）。App 内嵌网页版点选元素：打开 `/#edit=<id>` 或 `/#new&url=<网址>`（`openFromHash`），保存/关闭编辑窗口时 `tellApp` 通过 `webkit.messageHandlers.pagewatch` 发 `saved`/`closed`。改接口字段时注意别破坏 App
 
 ## 发布新版本
 - 在 CHANGELOG.md 写好 `## vX.Y.Z — 日期` 一节（网站「设置 → 版本更新」通过 `/api/changelog` 直接显示这个文件，所以每个版本都必须写，用户能看懂的大白话），然后 `npm run release -- X.Y.Z`（改版本号、提交、打标签、git archive 打包 + sha256、推送、gh release create）

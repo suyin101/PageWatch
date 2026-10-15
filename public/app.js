@@ -70,6 +70,7 @@ function openModal(id) {
 }
 function closeModal(id) {
   $('#' + id).classList.add('hidden');
+  if (id === 'editor') tellApp('closed');
   // 关掉编辑窗口：先留着网页和填的内容，5 分钟内再打开不用重新加载；超过 5 分钟才卸掉预览网页
   if (id === 'editor') {
     clearTimeout(state.unloadTimer);
@@ -982,6 +983,7 @@ form.addEventListener('submit', async (e) => {
   try {
     if (state.editingId) await api(`/monitors/${state.editingId}`, { method: 'PUT', body });
     else await api('/monitors', { method: 'POST', body });
+    tellApp('saved');
     closeModal('editor');
     state.draftKey = null; // 保存了，下次打开从头开始（预览网页还在的话照样直接用）
     toast(state.editingId ? '已保存' : '已添加，正在进行第一次检查…');
@@ -1605,7 +1607,31 @@ function showApp(data) {
   $('#login').classList.add('hidden');
   $('#app').classList.remove('hidden');
   scheduleRefresh();
-  showWhatsNew();
+  if (!openFromHash()) showWhatsNew();
+}
+
+// iPhone App 打开网页版来点选元素：#edit=<监测 id> 或 #new&url=<网址>，保存/关闭时告诉 App
+function tellApp(type) {
+  try {
+    window.webkit?.messageHandlers?.pagewatch?.postMessage({ type });
+  } catch {}
+}
+
+function openFromHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (!h.has('edit') && !h.has('new')) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  const m = h.has('edit') && state.monitors.find((x) => x.id === h.get('edit'));
+  if (h.has('edit') && !m) return toast('这个监测已经被删除', true), false;
+  openEditor(m || undefined);
+  const url = h.get('url');
+  if (!m && /^https?:\/\/\S+$/i.test(url || '')) {
+    $('#fUrl').value = url;
+    showApiTip();
+    state.navStack = [];
+    loadFrame();
+  }
+  return true;
 }
 
 // 刚更新到新版本时，自动打开「版本更新」，让人看到这次更新了什么
