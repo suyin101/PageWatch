@@ -9,6 +9,7 @@ const { chromium } = require('playwright');
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const NAV_TIMEOUT = 45_000;
+const CHECK_NAV_TIMEOUT = 25_000; // 定时检查时等网站开始返回的时间，没反应就换个新连接再试，见 readElementOnce
 const SELECTOR_TIMEOUT = 15_000;
 const DOM_TIMEOUT = 20_000; // 网站开始返回后，最多等这么久让网页骨架出来，没出来也继续
 const SESSION_IDLE_MS = 3 * 60_000; // 编辑时打开的网页保留 3 分钟，方便马上试读；关掉编辑窗口就立刻关
@@ -123,17 +124,17 @@ function withTimeout(promise, ms, message) {
 // 以前要等它加载完才算打开，结果整页超时；现在没加载完也直接去找元素，元素出来了就算成功
 const slowPages = new WeakSet(); // 骨架一直没加载完的网页，找不到元素时报“网站太慢”而不是“网页改版”
 
-async function gotoPage(page, url) {
+async function gotoPage(page, url, timeout = NAV_TIMEOUT) {
   try {
-    await page.goto(url, { waitUntil: 'commit', timeout: NAV_TIMEOUT });
+    await page.goto(url, { waitUntil: 'commit', timeout });
   } catch (e) {
     // 连接偶尔被网站掐断（防火墙、网络抖动），隔一秒再试一次
-    if (!/ERR_(CONNECTION_(RESET|CLOSED)|EMPTY_RESPONSE|HTTP2_PROTOCOL_ERROR|NETWORK_CHANGED)/.test(e.message)) throw new Error(friendlyError(e.message));
+    if (!/ERR_(CONNECTION_(RESET|CLOSED)|EMPTY_RESPONSE|HTTP2_PROTOCOL_ERROR|NETWORK_CHANGED)/.test(e.message)) throw new Error(friendlyError(e.message, timeout));
     await new Promise((r) => setTimeout(r, 1000));
     try {
-      await page.goto(url, { waitUntil: 'commit', timeout: NAV_TIMEOUT });
+      await page.goto(url, { waitUntil: 'commit', timeout });
     } catch (e2) {
-      throw new Error(friendlyError(e2.message));
+      throw new Error(friendlyError(e2.message, timeout));
     }
   }
   try {
@@ -147,14 +148,16 @@ async function gotoPage(page, url) {
 // 很多网站会一直在后台发请求，“等所有请求结束”经常要等到超时，所以只短暂等一下
 const settle = (page, ms) => page.waitForLoadState('networkidle', { timeout: ms }).catch(() => {});
 
-function friendlyError(msg) {
+const NO_RESPONSE = '网站一直没有响应';
+
+function friendlyError(msg, timeout = NAV_TIMEOUT) {
   const known = [
     [/ERR_NAME_NOT_RESOLVED/, '找不到这个网站（域名无法解析），检查一下网址'],
     [/ERR_CONNECTION_REFUSED/, '网站拒绝连接，可能网站挂了'],
     [/ERR_CONNECTION_(RESET|CLOSED)|ERR_EMPTY_RESPONSE/, '连接被网站中断，可能被网站拦截了'],
     [/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED/, '电脑没有联网'],
     [/ERR_CERT|SSL/, '网站的 HTTPS 证书有问题'],
-    [/Timeout/i, '网页打开超时（45 秒内网站一直没有响应）'],
+    [/Timeout/i, `网页打开超时（${timeout / 1000} 秒内${NO_RESPONSE}）`],
   ];
   for (const [re, text] of known) if (re.test(msg)) return text;
   return '网页打开失败：' + msg.replace(/^page\.goto:\s*/, '').split('\n')[0];
@@ -233,18 +236,30 @@ async function readElement(url, selector, attribute, opts = {}) {
 }
 
 async function readElementOnce(url, selector, attribute, { downloadSelector } = {}) {
+  try {
+    return await readWithNewContext(url, selector, attribute, downloadSelector);
+  } catch (e) {
+    // 网站偶尔一直不返回网页（B 站在服务器上常见，几分钟后再开又好了），像是连接卡住了。
+    // 换一个全新的浏览器环境（新的连接）马上再试一次，不用等下一轮
+    if (!e.message.includes(NO_RESPONSE)) throw e;
+    console.log(`[重开] ${url} ${e.message}，换新连接再试一次`);
+    return readWithNewContext(url, selector, attribute, downloadSelector);
+  }
+}
+
+async function readWithNewContext(url, selector, attribute, downloadSelector) {
   const context = await newContext();
   try {
     await context.route('**/*', (route) => (isJunk(route.request()) ? route.abort() : route.continue()));
     const page = await context.newPage();
-    await gotoPage(page, url);
+    await gotoPage(page, url, CHECK_NAV_TIMEOUT);
     let raw;
     try {
       raw = await readFromPage(page, selector, attribute);
     } catch (e) {
       // 有的网站偶尔不给内容（比如 B 站有时会返回反爬虫页面），刷新再试一次
       if (!/找不到这个元素|还没出来/.test(e.message)) throw e;
-      await gotoPage(page, url);
+      await gotoPage(page, url, CHECK_NAV_TIMEOUT);
       raw = await readFromPage(page, selector, attribute);
     }
     return { raw, downloadUrl: await readDownload(page, downloadSelector) };
