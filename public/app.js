@@ -591,27 +591,41 @@ $('#sourceSeg').addEventListener('click', (e) => {
 });
 
 // 有更稳定接口的网站：在网页方式下提示一键换成接口
+// from：在哪种方式下提示（page 网页方式；api 已经是接口但有更好的接口）
+const bili = (mid) => `https://api.bilibili.com/x/series/recArchivesByKeywords?mid=${mid}&keywords=&ps=1&pn=1`;
 const API_SUGGEST = [
   {
+    from: 'page',
     re: /^https?:\/\/space\.bilibili\.com\/(\d+)/,
-    site: 'B 站个人空间',
-    what: '投稿数',
-    url: (m) => `https://api.bilibili.com/x/web-interface/card?mid=${m[1]}`,
-    path: 'data.archive_count',
+    text: 'B 站个人空间在服务器上打开网页经常超时。建议改用 <b>接口数据</b>：不用打开网页，直接读<b>最新视频的标题</b>，出新视频就提醒你新标题，更快更稳定。',
+    btn: '一键换成接口数据',
+    url: (m) => bili(m[1]),
+    path: 'data.archives[0].title',
+  },
+  {
+    from: 'api',
+    re: /^https?:\/\/api\.bilibili\.com\/x\/web-interface\/card\?(?:.*&)?mid=(\d+)/,
+    text: '这个接口只有投稿数，看不到视频标题。可以换成监测 <b>最新视频的标题</b>，出新视频时通知里直接写新视频叫什么。',
+    btn: '换成监测最新视频标题',
+    url: (m) => bili(m[1]),
+    path: 'data.archives[0].title',
   },
 ];
 
 function showApiTip() {
   const tip = $('#apiTip');
   const url = $('#fUrl').value.trim();
-  const hit = state.source === 'page' && API_SUGGEST.map((s) => [s, url.match(s.re)]).find(([, m]) => m);
+  const hit = API_SUGGEST.filter((s) => s.from === state.source)
+    .map((s) => [s, url.match(s.re)])
+    .find(([, m]) => m);
   tip.classList.toggle('hidden', !hit);
   if (!hit) return;
   const [s, m] = hit;
-  tip.innerHTML = `💡 ${s.site}在服务器上打开网页经常超时。建议改用 <b>接口数据</b>：不用打开网页，直接读${s.what}，更快更稳定。
-    <button type="button" class="link" id="btnUseApi">一键换成接口数据</button>`;
+  tip.innerHTML = `💡 ${s.text} <button type="button" class="link" id="btnUseApi">${s.btn}</button>`;
   $('#btnUseApi').onclick = () => {
-    if (!form.link.value) form.link.value = url;
+    if (!form.link.value) form.link.value = s.from === 'page' ? url : `https://space.bilibili.com/${m[1]}/upload/video`;
+    // 之前自动起的「xx 投稿数」名字跟着改
+    if (s.from === 'api') form.name.value = form.name.value.replace(/投稿数$/, '最新视频');
     $('#fUrl').value = s.url(m);
     form.selector.value = s.path;
     form.downloadSelector.value = '';
@@ -625,6 +639,11 @@ function showApiTip() {
 
 // 常见接口里各项的中文名，方便认
 const FIELD_NAMES = {
+  'data.archives[0].title': '最新视频标题',
+  'data.archives[0].desc': '最新视频简介',
+  'data.archives[0].bvid': '最新视频编号',
+  'data.archives[0].stat.view': '最新视频播放量',
+  'data.page.total': '投稿数',
   'data.archive_count': '投稿数',
   'data.card.fans': '粉丝数',
   'data.follower': '粉丝数',

@@ -7,11 +7,28 @@ const MAX_FIELDS = 300; // 给编辑窗口列出的项最多这么多
 const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
-async function fetchOnce(url) {
+// B 站接口对“没有访客标识”的请求容易返回 412（风控）。先向 B 站要一个访客标识（buvid），之后的请求都带上，
+// 像浏览器里的普通访客；被拦了就换一个新的
+let biliCookie = null;
+async function biliHeaders(fresh) {
+  if (!biliCookie || fresh) {
+    biliCookie = null;
+    try {
+      const r = await fetch('https://api.bilibili.com/x/frontend/finger/spi', { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10_000) });
+      const d = (await r.json()).data;
+      if (d?.b_3) biliCookie = `buvid3=${d.b_3}; buvid4=${encodeURIComponent(d.b_4 || '')}`;
+    } catch {}
+  }
+  return { Referer: 'https://www.bilibili.com/', Origin: 'https://www.bilibili.com', ...(biliCookie && { Cookie: biliCookie }) };
+}
+const isBili = (url) => /(^|\.)bilibili\.com$/.test(new URL(url).hostname);
+
+async function fetchOnce(url, { fresh = false } = {}) {
   let res;
   try {
+    const extra = isBili(url) ? await biliHeaders(fresh) : {};
     res = await fetch(url, {
-      headers: { 'User-Agent': UA, Accept: 'application/json, text/plain, */*', 'Accept-Language': 'zh-CN,zh;q=0.9' },
+      headers: { 'User-Agent': UA, Accept: 'application/json, text/plain, */*', 'Accept-Language': 'zh-CN,zh;q=0.9', ...extra },
       redirect: 'follow',
       signal: AbortSignal.timeout(TIMEOUT),
     });
@@ -24,6 +41,7 @@ async function fetchOnce(url) {
   }
   const text = await res.text();
   if (text.length > MAX_BYTES) throw new Error('接口返回的内容太大了');
+  if (res.status === 412 || res.status === 429) throw new Error(`接口暂时拒绝访问（HTTP ${res.status}），网站觉得访问太频繁，过一会儿会自动恢复`);
   if (!res.ok) throw new Error(`接口返回错误（HTTP ${res.status}）`);
   try {
     return JSON.parse(text);
@@ -32,14 +50,15 @@ async function fetchOnce(url) {
   }
 }
 
-// 偶尔连接失败或超时，马上再请求一次
+// 偶尔连接失败、超时或被风控拦一下，等几秒再请求（最多再试两次）
 async function fetchJson(url) {
-  try {
-    return await fetchOnce(url);
-  } catch (e) {
-    if (/不是接口数据|HTTP 4\d\d|域名无法解析/.test(e.message)) throw e;
-    await new Promise((r) => setTimeout(r, 2000));
-    return fetchOnce(url);
+  for (let i = 0; ; i++) {
+    try {
+      return await fetchOnce(url, { fresh: i > 0 });
+    } catch (e) {
+      if (i >= 2 || /不是接口数据|HTTP (?!412|429)4\d\d|域名无法解析/.test(e.message)) throw e;
+      await new Promise((r) => setTimeout(r, (i + 1) * 4000));
+    }
   }
 }
 
