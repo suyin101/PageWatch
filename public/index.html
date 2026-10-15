@@ -58,10 +58,18 @@
       </div>
       <div class="editor-body">
         <div class="picker-pane">
+          <div class="sourcebar">
+            <span class="small muted">监测方式</span>
+            <div class="seg" id="sourceSeg">
+              <button type="button" data-source="page" class="on" title="打开网页，点选要监测的内容">🌐 网页</button>
+              <button type="button" data-source="api" title="直接读取网站的数据接口（返回 JSON 的网址），不用打开网页，更快更稳定">🔗 接口数据</button>
+            </div>
+          </div>
           <form class="urlbar" id="urlForm">
             <input type="url" id="fUrl" placeholder="粘贴要监测的网址，例如 https://www.blackmagicdesign.com/cn/products/davinciresolve" required>
-            <button class="btn primary" type="submit">加载网页</button>
+            <button class="btn primary" type="submit" id="btnLoad">加载网页</button>
           </form>
+          <div class="hint api-tip hidden" id="apiTip"></div>
           <div class="modebar hidden" id="modeBar">
             <button type="button" class="btn sm" id="btnBack" title="回到上一个网页" disabled>← 返回</button>
             <div class="seg" id="modeSeg">
@@ -79,6 +87,10 @@
             <div class="frame-loading hidden" id="frameLoading"><div class="spinner"></div><div id="loadingText">正在打开网页…</div><div class="small" id="loadingTime"></div></div>
             <div class="pick-banner hidden" id="pickBanner">👆 请在网页上点击 <b>下载按钮</b>　<button type="button" class="link" id="btnCancelPick">取消</button></div>
             <iframe id="frame" title="网页预览" class="hidden"></iframe>
+            <div class="api-pane hidden" id="apiPane">
+              <input type="search" id="apiFilter" placeholder="搜索名称或内容，比如 count、粉丝">
+              <div class="api-fields" id="apiFields"></div>
+            </div>
           </div>
         </div>
 
@@ -88,13 +100,17 @@
           </label>
 
           <div class="field">
-            <div class="label-row">监测的元素
-              <button type="button" class="link" id="btnParent" title="选中的范围太小时，扩大到外面一层">⬆ 选父级</button>
+            <div class="label-row"><span id="selectorLabel">监测的元素</span>
+              <button type="button" class="link page-only" id="btnParent" title="选中的范围太小时，扩大到外面一层">⬆ 选父级</button>
             </div>
             <textarea name="selector" rows="2" placeholder="在左边网页上点击选择，或手动填写 CSS 选择器" spellcheck="false"></textarea>
           </div>
 
-          <label>读取内容
+          <label class="api-only">通知里的链接（可选）
+            <input name="link" type="url" placeholder="收到通知时点「打开网页」去哪里，比如对应的网页地址">
+          </label>
+
+          <label class="page-only">读取内容
             <select name="attribute">
               <option value="">元素的文字</option>
               <option value="href">链接地址（href）</option>
@@ -122,7 +138,7 @@
             <input name="extractPattern" placeholder="例如：最新版\s*([\d.]+)" spellcheck="false">
           </label>
 
-          <div class="field">
+          <div class="field page-only">
             <div class="label-row">下载按钮（可选）
               <button type="button" class="link" id="btnPickDownload">🎯 在网页上选择</button>
             </div>

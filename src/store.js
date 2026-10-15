@@ -122,7 +122,7 @@ function updateSettings(patch) {
   return db.settings;
 }
 
-const EDITABLE = ['name', 'url', 'selector', 'attribute', 'extract', 'extractPattern', 'downloadSelector', 'rule', 'threshold', 'interval', 'enabled', 'notifyFeishu', 'notifyWebhook', 'note'];
+const EDITABLE = ['name', 'source', 'link', 'url', 'selector', 'attribute', 'extract', 'extractPattern', 'downloadSelector', 'rule', 'threshold', 'interval', 'enabled', 'notifyFeishu', 'notifyWebhook', 'note'];
 
 function normalize(m) {
   m.interval = Math.max(1, Number(m.interval) || db.settings.defaultInterval);
@@ -145,6 +145,8 @@ function createMonitor(data) {
   const m = normalize({
     id: crypto.randomUUID(),
     name: '',
+    source: 'page', // page 打开网页读元素 | api 读接口数据（selector 存的是数据里的路径，如 data.archive_count）
+    link: '', // 通知里「打开网页」的链接，不填就用 url（接口网址对人没用，可以填对应的网页）
     url: '',
     selector: '',
     attribute: '',
@@ -176,7 +178,7 @@ function updateMonitor(id, patch) {
   if (!m) return null;
   const changed = (k) => patch[k] !== undefined && (patch[k] || '') !== (m[k] || '');
   // 读什么、取哪部分变了，旧值就没有比较意义了
-  const targetChanged = ['url', 'selector', 'attribute', 'extract', 'extractPattern'].some(changed);
+  const targetChanged = ['source', 'url', 'selector', 'attribute', 'extract', 'extractPattern'].some(changed);
   Object.assign(m, pick(patch, EDITABLE));
   normalize(m);
   // 网址或元素换了，旧的值已经没有比较意义，重新建立基准

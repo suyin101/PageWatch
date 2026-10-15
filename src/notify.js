@@ -84,7 +84,10 @@ async function sendFeishu(webhook, secret, body) {
 
 // 补上规则说明，模板里的 {{规则}} 要用
 function withRule(event) {
-  return { ...event, ruleText: describe(event.monitor) };
+  const m = event.monitor;
+  // 接口监测：通知里放对应的网页链接，不放接口网址
+  const monitor = m.link ? { ...m, url: m.link } : m;
+  return { ...event, monitor, ruleText: describe(m) };
 }
 
 // 发送通知，返回每个渠道的结果，单个渠道失败不影响其它渠道

@@ -9,6 +9,7 @@
 - `src/picker.js` — 注入快照里的点选脚本，通过 postMessage 与面板通信；`/api/snapshot` 用 CSP nonce 只允许它执行。两种模式：pick 选元素；browse 把点击发给 `/api/browse/click`，由 `clickInSession` 在后台真实网页上点（处理跳转/新窗口/弹窗），网址变了就把 session 改记到新网址下，前端再用新网址 `fresh=0` 取快照，并清掉上一页选的元素
 - `src/chromium.js` — 必须在 require('playwright') 前加载：按 .env 指定 → 项目 `.browsers` → node_modules/.local-browsers → 系统缓存 的顺序找装好的 chromium_headless_shell（INSTALLATION_COMPLETE 标记 + 程序本体都在才算，v1.9.2 线上出过标记在、程序没了），都没有就设到 `.browsers` 并在启动浏览器前用 npmmirror 自动下载。**浏览器不要再放 node_modules 里**（npm 重装依赖会删掉，v1.8 线上出过事）。状态通过列表接口的 X-PW-Browser 头给前端显示横幅
 - `src/selector.js` — 生成 CSS 选择器，快照（和 picker.js 一起注入）和后台真实网页（`locate`，用字符串 evaluate 绕开网站 CSP）共用。`snapshot` 会给真实网页每个元素打 `data-pw-i` 编号，快照里带着；点选后 `/api/browse/locate` 按编号在真实网页里重新生成选择器，浏览点击也优先按编号找
+- `src/api.js` — 「接口数据」监测（`source: 'api'`）：Node fetch 读 JSON，`selector` 存的是数据路径（`data.archive_count`、`data.list[0].title`），失败马上重试一次；`link` 是通知里「打开网页」用的链接（notify 的 withRule 里替换 url）。前端 `API_SUGGEST` 遇到 B 站空间页提示一键换成接口，`FIELD_NAMES` 给常见字段起中文名
 - `src/extract.js` — 「只看哪部分」提取（版本号/数字/正则），UMD 写法，服务器和网页（/extract.js）共用同一份
 - `src/rules.js` — 判断规则 changed / gt / lt / increased
 - `src/checker.js` — 每 20 秒扫一次到期的监测，并发：CHECK_CONCURRENCY 或内存<3GB 时 1、否则 2。browser.js 里单次检查 90 秒超时，浏览器闲置 3 分钟自动关闭

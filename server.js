@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const store = require('./src/store');
 const checker = require('./src/checker');
 const browser = require('./src/browser');
+const apiSource = require('./src/api');
 const { notify, preview: previewTemplates, SAMPLE_EVENT } = require('./src/notify');
 const { RULES } = require('./src/rules');
 const tpl = require('./src/template');
@@ -176,7 +177,16 @@ function validate(body, partial) {
       throw new Error('网址格式不对，要以 http:// 或 https:// 开头');
     }
   }
-  if ((!partial || body.selector !== undefined) && !String(body.selector || '').trim()) throw new Error('请先选择一个网页元素');
+  if (body.source !== undefined && !['page', 'api'].includes(body.source)) throw new Error('未知的监测方式');
+  if ((!partial || body.selector !== undefined) && !String(body.selector || '').trim())
+    throw new Error(body.source === 'api' ? '请先在左边选择接口数据里的一项' : '请先选择一个网页元素');
+  if (body.link) {
+    try {
+      if (!/^https?:$/.test(new URL(body.link).protocol)) throw 0;
+    } catch {
+      throw new Error('通知里的链接格式不对，要以 http:// 或 https:// 开头');
+    }
+  }
   if (body.rule !== undefined && !RULES[body.rule]) throw new Error('未知的判断规则');
   if (['gt', 'lt'].includes(body.rule) && (body.threshold === '' || Number.isNaN(Number(body.threshold))))
     throw new Error('“大于/小于”规则需要填写一个数字');
@@ -275,8 +285,18 @@ app.post('/api/monitors/:id/ack', (req, res) => {
 app.post(
   '/api/preview',
   wrap(async (req, res) => {
-    validate(req.body, false);
     const b = req.body;
+    if (b.source === 'api') {
+      validate({ ...b, selector: b.selector || '-' }, false);
+      const r = await apiSource.previewApi(b.url, b.selector);
+      try {
+        if (r.value != null) r.extracted = extractor.extract(r.value, b.extract, b.extractPattern);
+      } catch (e) {
+        r.extractError = e.message;
+      }
+      return res.json(r);
+    }
+    validate(b, false);
     const r = await browser.preview(b.url, b.selector, b.attribute, { downloadSelector: b.downloadSelector });
     // 同时给出提取后的结果，提取失败不算读取失败，单独提示
     try {

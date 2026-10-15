@@ -204,7 +204,7 @@ function renderList() {
       <div class="item ${cat} ${!m.enabled ? 'paused' : ''}" data-id="${m.id}">
         <div>
           <div class="title" data-act="detail"><span class="dot ${dot}"></span><span>${esc(m.name || '未命名')}</span>${cat === 'updated' ? '<em class="badge">有更新</em>' : ''}</div>
-          <a class="url" href="${esc(m.url)}" target="_blank" rel="noopener noreferrer">${esc(m.url)}</a>
+          <a class="url" href="${esc(m.link || m.url)}" target="_blank" rel="noopener noreferrer">${m.source === 'api' ? '🔗 ' : ''}${esc(m.link || m.url)}</a>
           ${m.note ? `<div class="note">📝 ${esc(m.note)}</div>` : ''}
         </div>
         <div>${value}</div>
@@ -333,7 +333,8 @@ async function openDetail(id) {
   $('#detailBody').innerHTML = `
     <dl class="kv">
       <dt>网址</dt><dd><a href="${esc(m.url)}" target="_blank" rel="noopener noreferrer">${esc(m.url)}</a></dd>
-      <dt>元素</dt><dd><code>${esc(m.selector)}</code>${m.attribute ? ` → 读取 <code>${esc(m.attribute)}</code>` : ''}</dd>
+      ${m.source === 'api' ? `<dt>方式</dt><dd>接口数据</dd>${m.link ? `<dt>通知链接</dt><dd><a href="${esc(m.link)}" target="_blank" rel="noopener noreferrer">${esc(m.link)}</a></dd>` : ''}` : ''}
+      <dt>${m.source === 'api' ? '数据项' : '元素'}</dt><dd><code>${esc(m.selector)}</code>${m.attribute ? ` → 读取 <code>${esc(m.attribute)}</code>` : ''}</dd>
       ${m.extract ? `<dt>只看</dt><dd>${esc(state.extractModes[m.extract])}${m.extract === 'regex' ? ` <code>${esc(m.extractPattern)}</code>` : ''}</dd>` : ''}
       ${m.extract && m.lastRaw ? `<dt>原文</dt><dd>${esc(m.lastRaw)}</dd>` : ''}
       ${m.lastDownloadUrl ? `<dt>下载链接</dt><dd><a href="${esc(m.lastDownloadUrl)}" target="_blank" rel="noopener noreferrer">${esc(m.lastDownloadUrl)}</a></dd>` : ''}
@@ -463,11 +464,13 @@ function openEditor(m) {
   state.editingId = m ? m.id : null;
   state.lastPick = null;
   state.autoName = null;
+  state.apiFields = null;
   $('#editorTitle').textContent = m ? '编辑监测' : '新建监测';
   $('#formError').textContent = '';
   $('#notifyTestMsg').textContent = '';
   form.reset();
   form.name.value = m?.name || '';
+  form.link.value = m?.link || '';
   form.selector.value = m?.selector || '';
   form.attribute.value = m?.attribute || '';
   form.extract.value = m?.extract || '';
@@ -488,6 +491,13 @@ function openEditor(m) {
   $('#fUrl').value = m?.url || '';
   state.navStack = [];
   state.warnedSameUrl = false;
+  setSource(m?.source || 'page');
+  if (state.source === 'api') {
+    openModal('editor');
+    if (m) loadApi();
+    else $('#fUrl').focus();
+    return;
+  }
   setFrameMode('pick');
   // 预览里已经是这个网页（比如刚编辑过同一个网址），直接用，不重新加载
   if (m && frame.getAttribute('src') && frame.dataset.url === m.url) {
@@ -530,10 +540,182 @@ function loadFrame(fresh = true, { keepPage = false } = {}) {
   });
   frame.src = `/api/snapshot?fresh=${fresh ? 1 : 0}&url=${encodeURIComponent(url)}`;
   frame.dataset.url = url;
+  showApiTip();
+}
+
+// ---------- 监测方式：网页 / 接口数据 ----------
+// 接口数据：不开网页，直接读网站返回的 JSON 数据，取其中一项（selector 里存的是路径，比如 data.archive_count）
+const SOURCE_TEXT = {
+  page: { btn: '加载网页', label: '监测的元素', ph: '粘贴要监测的网址，例如 https://www.blackmagicdesign.com/cn/products/davinciresolve', sel: '在左边网页上点击选择，或手动填写 CSS 选择器' },
+  api: { btn: '读取接口', label: '接口里的哪一项', ph: '粘贴接口网址（打开后是一堆 { } 数据的那种），例如 https://api.github.com/repos/obsproject/obs-studio/releases/latest', sel: '在左边点选一项，或手动填写，例如 data.archive_count' },
+};
+
+function setSource(src) {
+  state.source = src;
+  const t = SOURCE_TEXT[src];
+  $('.editor').classList.toggle('api', src === 'api');
+  for (const b of $('#sourceSeg').children) b.classList.toggle('on', b.dataset.source === src);
+  $('#btnLoad').textContent = t.btn;
+  $('#selectorLabel').textContent = t.label;
+  $('#fUrl').placeholder = t.ph;
+  form.selector.placeholder = t.sel;
+  $('#apiPane').classList.toggle('hidden', src !== 'api' || !state.apiFields);
+  if (src === 'api') {
+    $('#modeBar').classList.add('hidden');
+    frame.classList.add('hidden');
+    $('#frameLoading').classList.add('hidden');
+    $('#frameTip').classList.toggle('hidden', !!state.apiFields);
+    $('#frameTip').innerHTML = `<div class="big">① 粘贴接口网址并读取</div><div>② 在列出的数据里 <b>点击</b> 要监测的那一项（比如版本号、投稿数）</div><div>③ 在右边设置判断规则，保存</div>`;
+  } else {
+    $('#apiPane').classList.add('hidden');
+    $('#frameTip').innerHTML = FRAME_TIP;
+    $('#frameTip').classList.toggle('hidden', !frame.getAttribute('src'));
+    if (frame.getAttribute('src')) {
+      frame.classList.remove('hidden');
+      $('#modeBar').classList.remove('hidden');
+    }
+  }
+  showApiTip();
+}
+const FRAME_TIP = $('#frameTip').innerHTML;
+
+$('#sourceSeg').addEventListener('click', (e) => {
+  const src = e.target.closest('button')?.dataset.source;
+  if (!src || src === state.source) return;
+  // 两种方式的“要监测的那一项”写法不一样，换方式就清掉
+  form.selector.value = '';
+  form.downloadSelector.value = '';
+  setPreview('还没选择', false);
+  state.apiFields = null;
+  setSource(src);
+});
+
+// 有更稳定接口的网站：在网页方式下提示一键换成接口
+const API_SUGGEST = [
+  {
+    re: /^https?:\/\/space\.bilibili\.com\/(\d+)/,
+    site: 'B 站个人空间',
+    what: '投稿数',
+    url: (m) => `https://api.bilibili.com/x/web-interface/card?mid=${m[1]}`,
+    path: 'data.archive_count',
+  },
+];
+
+function showApiTip() {
+  const tip = $('#apiTip');
+  const url = $('#fUrl').value.trim();
+  const hit = state.source === 'page' && API_SUGGEST.map((s) => [s, url.match(s.re)]).find(([, m]) => m);
+  tip.classList.toggle('hidden', !hit);
+  if (!hit) return;
+  const [s, m] = hit;
+  tip.innerHTML = `💡 ${s.site}在服务器上打开网页经常超时。建议改用 <b>接口数据</b>：不用打开网页，直接读${s.what}，更快更稳定。
+    <button type="button" class="link" id="btnUseApi">一键换成接口数据</button>`;
+  $('#btnUseApi').onclick = () => {
+    if (!form.link.value) form.link.value = url;
+    $('#fUrl').value = s.url(m);
+    form.selector.value = s.path;
+    form.downloadSelector.value = '';
+    form.attribute.value = '';
+    form.extract.value = '';
+    state.apiFields = null;
+    setSource('api');
+    loadApi();
+  };
+}
+
+// 常见接口里各项的中文名，方便认
+const FIELD_NAMES = {
+  'data.archive_count': '投稿数',
+  'data.card.fans': '粉丝数',
+  'data.follower': '粉丝数',
+  'data.like_num': '获赞数',
+  'data.article_count': '专栏数',
+  'data.card.name': '名字',
+  'data.card.sign': '签名',
+  tag_name: '版本号',
+  name: '名称',
+  published_at: '发布时间',
+};
+
+function renderApiFields() {
+  const box = $('#apiFields');
+  const q = $('#apiFilter').value.trim().toLowerCase();
+  const sel = form.selector.value.trim().replace(/\[(\d+)\]/g, '.$1');
+  const row = (f) => {
+    const name = FIELD_NAMES[f.path];
+    const on = f.path.replace(/\[(\d+)\]/g, '.$1') === sel;
+    return `<button type="button" class="api-field ${on ? 'on' : ''}" data-path="${esc(f.path)}">
+      <span class="path">${name ? `<b>${esc(name)}</b>` : ''}${esc(f.path)}</span><span class="val">${esc(f.value) || '（空）'}</span></button>`;
+  };
+  const list = (state.apiFields || []).filter((f) => !q || (f.path + ' ' + f.value + ' ' + (FIELD_NAMES[f.path] || '')).toLowerCase().includes(q));
+  const common = list.filter((f) => FIELD_NAMES[f.path]);
+  box.innerHTML =
+    (common.length && !q ? `<div class="api-group">常用</div>${common.map(row).join('')}<div class="api-group">全部</div>` : '') +
+    (list.map(row).join('') || '<div class="muted small">没有符合的项</div>');
+}
+
+$('#apiFilter').addEventListener('input', renderApiFields);
+$('#fUrl').addEventListener('input', showApiTip);
+$('#apiFields').addEventListener('click', (e) => {
+  const b = e.target.closest('.api-field');
+  if (!b) return;
+  form.selector.value = b.dataset.path;
+  const f = state.apiFields.find((x) => x.path === b.dataset.path);
+  setPreview(f.value || '（内容为空）', !!f.value);
+  autoApiName();
+  renderApiFields();
+});
+
+// 名称没填时，按选的那一项自动起名，比如「影视飓风 投稿数」
+function autoApiName() {
+  if (form.name.value.trim() && form.name.value !== state.autoName) return;
+  const what = FIELD_NAMES[form.selector.value.trim()];
+  if (!what) return;
+  const who = state.apiFields?.find((x) => x.path === 'data.card.name')?.value;
+  form.name.value = state.autoName = who ? `${who} ${what}` : what;
+}
+
+async function loadApi() {
+  const url = $('#fUrl').value.trim();
+  if (!url) return;
+  $('#frameTip').classList.add('hidden');
+  $('#apiPane').classList.add('hidden');
+  $('#frameLoading').classList.remove('hidden');
+  $('#frameLoading').classList.remove('overlay');
+  stopLoadingTimer();
+  stopLoadingTimer = startTimer((sec) => {
+    $('#loadingText').textContent = '正在读取接口…';
+    $('#loadingTime').textContent = sec ? `已用 ${sec} 秒` : '';
+  });
+  try {
+    const sel = form.selector.value.trim();
+    const r = await api('/preview', { method: 'POST', body: { source: 'api', url } });
+    state.apiFields = r.fields;
+    $('#apiFilter').value = '';
+    if (sel) {
+      const norm = (p) => p.replace(/\[(\d+)\]/g, '.$1');
+      const f = r.fields.find((x) => norm(x.path) === norm(sel));
+      if (f) setPreview(f.value || '（内容为空）', !!f.value);
+      else setPreview(`接口数据里找不到「${sel}」这一项`, false);
+      autoApiName();
+    }
+    renderApiFields();
+    $('#apiPane').classList.remove('hidden');
+    // 选中的那一项滚到看得见的地方
+    $('#apiFields .api-field.on')?.scrollIntoView({ block: 'center' });
+  } catch (err) {
+    state.apiFields = null;
+    $('#frameTip').classList.remove('hidden');
+    $('#frameTip').innerHTML = `<div class="big">读取失败</div><div class="err-text">${esc(err.message)}</div>`;
+  } finally {
+    stopLoadingTimer();
+    $('#frameLoading').classList.add('hidden');
+  }
 }
 
 $('#urlForm').addEventListener('submit', (e) => {
   e.preventDefault();
+  if (state.source === 'api') return loadApi();
   state.navStack = [];
   loadFrame();
 });
@@ -542,6 +724,7 @@ $('#urlForm').addEventListener('submit', (e) => {
 $('#fUrl').addEventListener('paste', () =>
   setTimeout(() => {
     if (!/^https?:\/\/\S+$/i.test($('#fUrl').value.trim())) return;
+    if (state.source === 'api') return loadApi();
     state.navStack = [];
     loadFrame();
   })
@@ -717,6 +900,7 @@ $('#btnParent').addEventListener('click', () => {
 
 $('#btnTest').addEventListener('click', async () => {
   const btn = $('#btnTest');
+  if (state.source === 'api' && !form.selector.value.trim()) return toast('请先在左边选择接口数据里的一项', true);
   btn.disabled = true;
   btn.textContent = '读取中…';
   const stop = startTimer((sec) =>
@@ -726,6 +910,7 @@ $('#btnTest').addEventListener('click', async () => {
     const r = await api('/preview', {
       method: 'POST',
       body: {
+        source: state.source,
         url: $('#fUrl').value.trim(),
         selector: form.selector.value.trim(),
         attribute: form.attribute.value,
@@ -735,8 +920,14 @@ $('#btnTest').addEventListener('click', async () => {
       },
     });
     stop();
+    if (r.fields) {
+      state.apiFields = r.fields;
+      renderApiFields();
+      $('#apiPane').classList.remove('hidden');
+      $('#frameTip').classList.add('hidden');
+    }
     showDownload(r.downloadUrl, { tried: true });
-    const how = r.live ? '直接读取已打开的网页' : '重新打开网页读取，和定时检查一样';
+    const how = state.source === 'api' ? '读取接口，和定时检查一样' : r.live ? '直接读取已打开的网页' : '重新打开网页读取，和定时检查一样';
     setPreview(r.value || '（内容为空）', !!r.value, `✅ 读取成功 · 用时 ${r.ms < 100 ? '不到 0.1' : (r.ms / 1000).toFixed(1)} 秒（${how}）`, 'ok');
   } catch (err) {
     stop();
@@ -750,14 +941,17 @@ $('#btnTest').addEventListener('click', async () => {
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#formError').textContent = '';
+  const isApi = state.source === 'api';
   const body = {
     name: form.name.value.trim(),
+    source: state.source,
+    link: isApi ? form.link.value.trim() : '',
     url: $('#fUrl').value.trim(),
     selector: form.selector.value.trim(),
-    attribute: form.attribute.value,
+    attribute: isApi ? '' : form.attribute.value,
     extract: form.extract.value,
     extractPattern: form.extractPattern.value.trim(),
-    downloadSelector: form.downloadSelector.value.trim(),
+    downloadSelector: isApi ? '' : form.downloadSelector.value.trim(),
     rule: form.rule.value,
     threshold: form.threshold.value,
     interval: Number(form.interval.value),
@@ -800,7 +994,7 @@ $('#btnMonitorTestNotify').addEventListener('click', async () => {
       body: {
         id: state.editingId,
         name: form.name.value.trim(),
-        url: $('#fUrl').value.trim(),
+        url: (state.source === 'api' && form.link.value.trim()) || $('#fUrl').value.trim(),
         selector: form.selector.value.trim(),
         rule: form.rule.value,
         threshold: form.threshold.value,

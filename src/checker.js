@@ -1,6 +1,7 @@
 // 定时检查：每隔一会儿看看哪些监测到时间了，排队去检查
 const store = require('./store');
 const { readElement } = require('./browser');
+const { readApi } = require('./api');
 const { evaluate } = require('./rules');
 const { extract } = require('./extract');
 const { notify } = require('./notify');
@@ -42,7 +43,10 @@ async function checkMonitor(id, { silent = false } = {}) {
   const previous = m.lastValue;
   const startedAt = Date.now();
   try {
-    const { raw, downloadUrl } = await readElement(m.url, m.selector, m.attribute, { downloadSelector: m.downloadSelector });
+    const { raw, downloadUrl } =
+      m.source === 'api'
+        ? await readApi(m.url, m.selector)
+        : await readElement(m.url, m.selector, m.attribute, { downloadSelector: m.downloadSelector });
     // 只取出关键部分（比如版本号）来比较
     const value = extract(raw, m.extract, m.extractPattern);
     const { triggered } = evaluate(m, value, previous);
