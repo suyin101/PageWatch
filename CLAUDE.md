@@ -10,6 +10,7 @@
 - `src/chromium.js` — 必须在 require('playwright') 前加载：按 .env 指定 → 项目 `.browsers` → node_modules/.local-browsers → 系统缓存 的顺序找装好的 chromium_headless_shell（INSTALLATION_COMPLETE 标记 + 程序本体都在才算，v1.9.2 线上出过标记在、程序没了），都没有就设到 `.browsers` 并在启动浏览器前用 npmmirror 自动下载。**浏览器不要再放 node_modules 里**（npm 重装依赖会删掉，v1.8 线上出过事）。状态通过列表接口的 X-PW-Browser 头给前端显示横幅
 - `src/selector.js` — 生成 CSS 选择器，快照（和 picker.js 一起注入）和后台真实网页（`locate`，用字符串 evaluate 绕开网站 CSP）共用。`snapshot` 会给真实网页每个元素打 `data-pw-i` 编号，快照里带着；点选后 `/api/browse/locate` 按编号在真实网页里重新生成选择器，浏览点击也优先按编号找
 - `src/api.js` — 「接口数据」监测（`source: 'api'`）：Node fetch 读 JSON，`selector` 存的是数据路径（`data.archive_count`、`data.list[0].title`），失败马上重试一次；`link` 是通知里「打开网页」用的链接（notify 的 withRule 里替换 url）。B 站接口自动带 buvid（finger/spi 取，412 时换新）+ Referer，412/429 等几秒重试。前端 `API_SUGGEST` 遇到 B 站空间页（或旧的 card 接口）提示一键换成 recArchivesByKeywords 读 `data.archives[0].title`（最新视频标题），`FIELD_NAMES` 给常见字段起中文名
+- `src/uptime.js` — 「网站能否打开」监测（`source: 'uptime'`）：fetch 访问网址，连不上/超时/≥400/证书问题都算失败，当场 5 秒后重试一次；`selector` 存可选的「网页里必须有的文字」。lastValue 固定「正常」，lastRaw 带 HTTP 状态和用时。checker 里它连续 2 次失败（隔 1 分钟）就通知、打不开期间每分钟查一次，恢复时发 `recovered` 通知（带 errorSince 算打不开多久）；store 把打不开/恢复记进 history。iPhone App 还不认识这种方式
 - `src/extract.js` — 「只看哪部分」提取（版本号/数字/正则），UMD 写法，服务器和网页（/extract.js）共用同一份
 - `src/rules.js` — 判断规则 changed / gt / lt / increased
 - `src/checker.js` — 每 20 秒扫一次到期的监测，并发：CHECK_CONCURRENCY 或内存<3GB 时 1、否则 2。browser.js 里单次检查 90 秒超时，浏览器闲置 3 分钟自动关闭

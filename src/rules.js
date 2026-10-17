@@ -55,6 +55,7 @@ function evaluate(monitor, value, previous) {
 }
 
 function describe(monitor) {
+  if (monitor.source === 'uptime') return monitor.selector ? `网站打不开或找不到「${monitor.selector}」时` : '网站打不开时';
   const base = RULES[monitor.rule] || RULES.changed;
   if (monitor.rule === 'gt' || monitor.rule === 'lt') return base.replace('设定值', ` ${monitor.threshold}`);
   return base;

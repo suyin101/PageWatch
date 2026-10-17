@@ -63,6 +63,7 @@
             <div class="seg" id="sourceSeg">
               <button type="button" data-source="page" class="on" title="打开网页，点选要监测的内容">🌐 网页</button>
               <button type="button" data-source="api" title="直接读取网站的数据接口（返回 JSON 的网址），不用打开网页，更快更稳定">🔗 接口数据</button>
+              <button type="button" data-source="uptime" title="定时访问网站，打不开时通知你，恢复了也告诉你">🩺 网站能否打开</button>
             </div>
           </div>
           <form class="urlbar" id="urlForm">
@@ -130,11 +131,11 @@
             <div id="previewMeta" class="preview-meta"></div>
           </div>
 
-          <label>只看哪部分
+          <label class="not-uptime">只看哪部分
             <select name="extract" id="fExtract"></select>
           </label>
-          <div id="extractHint" class="hint hidden"></div>
-          <label id="patternRow" class="hidden">正则表达式 <span class="small muted">（有括号时只取括号里的部分）</span>
+          <div id="extractHint" class="hint hidden not-uptime"></div>
+          <label id="patternRow" class="hidden not-uptime">正则表达式 <span class="small muted">（有括号时只取括号里的部分）</span>
             <input name="extractPattern" placeholder="例如：最新版\s*([\d.]+)" spellcheck="false">
           </label>
 
@@ -146,10 +147,10 @@
             <div id="downloadPreview" class="preview-meta"></div>
           </div>
 
-          <label>什么时候通知我
+          <label class="not-uptime">什么时候通知我
             <select name="rule" id="fRule"></select>
           </label>
-          <label id="thresholdRow" class="hidden">设定值（数字）
+          <label id="thresholdRow" class="hidden not-uptime">设定值（数字）
             <input name="threshold" type="number" step="any" placeholder="例如 100">
           </label>
 

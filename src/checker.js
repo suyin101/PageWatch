@@ -2,6 +2,7 @@
 const store = require('./store');
 const { readElement } = require('./browser');
 const { readApi } = require('./api');
+const { readUptime } = require('./uptime');
 const { evaluate } = require('./rules');
 const { extract } = require('./extract');
 const { notify } = require('./notify');
@@ -12,12 +13,16 @@ const TICK_MS = 20_000;
 const CONCURRENCY = Number(process.env.CHECK_CONCURRENCY) || (require('os').totalmem() < 3 * 1024 ** 3 ? 1 : 2);
 const FAIL_THRESHOLD = 3; // 连续失败几次才算真的出错，避免偶尔的网络抖动也来打扰
 const RETRY_MS = 2 * 60_000; // 失败后多久重试
+// 「网站能否打开」要尽快知道：每次检查里已经自己重试过一次，再隔 1 分钟确认一次就通知
+const UPTIME_FAIL_THRESHOLD = 2;
+const UPTIME_RETRY_MS = 60_000;
 const WAKE_GRACE_MS = 30_000; // 电脑刚醒来时网络还没连上，先等一会儿再检查
 
 const running = new Set();
 const queue = [];
 const failures = new Map(); // id -> 连续失败次数
 const retryAt = new Map(); // id -> 下次重试的时间
+const failedSince = new Map(); // id -> 第一次失败的时间（网站从什么时候开始打不开）
 
 // ---------- 识别电脑睡眠 ----------
 // Mac 合上盖子会睡眠，期间还会时不时短暂醒来几秒。程序在这几秒里开始的检查，
@@ -43,19 +48,27 @@ async function checkMonitor(id, { silent = false } = {}) {
   const previous = m.lastValue;
   const startedAt = Date.now();
   try {
+    const uptime = m.source === 'uptime';
     const { raw, downloadUrl } =
       m.source === 'api'
         ? await readApi(m.url, m.selector)
-        : await readElement(m.url, m.selector, m.attribute, { downloadSelector: m.downloadSelector });
-    // 只取出关键部分（比如版本号）来比较
-    const value = extract(raw, m.extract, m.extractPattern);
-    const { triggered } = evaluate(m, value, previous);
+        : uptime
+          ? await readUptime(m.url, m.selector)
+          : await readElement(m.url, m.selector, m.attribute, { downloadSelector: m.downloadSelector });
+    // 只取出关键部分（比如版本号）来比较；网站能否打开只看通不通，不比较内容
+    const value = uptime ? '正常' : extract(raw, m.extract, m.extractPattern);
+    const { triggered } = uptime ? { triggered: false } : evaluate(m, value, previous);
     failures.delete(id);
     retryAt.delete(id);
+    failedSince.delete(id);
+    const wasDown = uptime && !!m.lastError;
+    const downSince = m.errorSince;
     const updated = store.recordCheck(id, { value, raw, downloadUrl, triggered });
     if (triggered && !silent) {
       await notify({ kind: 'updated', monitor: updated, oldValue: previous, newValue: value, raw, downloadUrl });
     }
+    // 网站之前报过打不开，现在好了，告诉一声
+    if (wasDown && !silent) await notify({ kind: 'recovered', monitor: updated, since: downSince, raw });
     return { ok: true, value, triggered, monitor: updated };
   } catch (e) {
     const msg = e.message.split('\n')[0];
@@ -67,20 +80,26 @@ async function checkMonitor(id, { silent = false } = {}) {
       return { ok: false, error: '电脑刚从睡眠中醒来，网络还没准备好，稍后会自动重试', monitor: m };
     }
 
+    const uptime = m.source === 'uptime';
+    const threshold = uptime ? UPTIME_FAIL_THRESHOLD : FAIL_THRESHOLD;
+    const retryMs = uptime ? UPTIME_RETRY_MS : RETRY_MS;
     const count = (failures.get(id) || 0) + 1;
     failures.set(id, count);
-    if (count < FAIL_THRESHOLD) {
-      console.log(`[重试] “${m.name}” 第 ${count} 次失败（${msg}），${RETRY_MS / 60_000} 分钟后重试`);
-      retryAt.set(id, Date.now() + RETRY_MS);
-      return { ok: false, error: `${msg}（第 ${count} 次失败，${RETRY_MS / 60_000} 分钟后自动重试）`, monitor: m };
+    if (!failedSince.has(id)) failedSince.set(id, new Date(startedAt).toISOString());
+    if (count < threshold) {
+      console.log(`[重试] “${m.name}” 第 ${count} 次失败（${msg}），${retryMs / 60_000} 分钟后重试`);
+      retryAt.set(id, Date.now() + retryMs);
+      return { ok: false, error: `${msg}（第 ${count} 次失败，${retryMs / 60_000} 分钟后自动重试）`, monitor: m };
     }
 
-    retryAt.delete(id);
+    // 网站打不开期间照常按 1 分钟一次检查，恢复了能马上知道
+    if (uptime) retryAt.set(id, Date.now() + retryMs);
+    else retryAt.delete(id);
     const wasError = !!m.lastError;
-    const updated = store.recordCheck(id, { error: msg });
+    const updated = store.recordCheck(id, { error: msg, since: failedSince.get(id) });
     // 只在刚开始出错时提醒一次，不然每次检查都会刷屏
     if (!wasError && !silent && updated) {
-      await notify({ kind: 'error', monitor: updated, error: `${msg}（已连续失败 ${count} 次）` });
+      await notify({ kind: 'error', monitor: updated, error: `${msg}（已连续失败 ${count} 次）`, since: failedSince.get(id) });
     }
     return { ok: false, error: msg, monitor: updated };
   }

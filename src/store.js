@@ -145,7 +145,9 @@ function createMonitor(data) {
   const m = normalize({
     id: crypto.randomUUID(),
     name: '',
-    source: 'page', // page 打开网页读元素 | api 读接口数据（selector 存的是数据里的路径，如 data.archive_count）
+    // page 打开网页读元素 | api 读接口数据（selector 存的是数据里的路径，如 data.archive_count）
+    // | uptime 网站能否打开（selector 存的是网页里必须有的文字，可以不填）
+    source: 'page',
     link: '', // 通知里「打开网页」的链接，不填就用 url（接口网址对人没用，可以填对应的网页）
     url: '',
     selector: '',
@@ -165,6 +167,7 @@ function createMonitor(data) {
     lastCheckedAt: null,
     lastChangedAt: null,
     lastError: null,
+    errorSince: null, // 从什么时候开始出错（网站能否打开的恢复通知里算打不开了多久）
     createdAt: new Date().toISOString(),
     history: [],
   });
@@ -187,6 +190,7 @@ function updateMonitor(id, patch) {
     m.previousValue = null;
     m.status = 'pending';
     m.lastError = null;
+    m.errorSince = null;
   }
   save();
   return m;
@@ -198,11 +202,20 @@ function recordCheck(id, result) {
   if (!m) return null;
   const now = new Date().toISOString();
   m.lastCheckedAt = now;
+  // 网站能否打开：内容一直是「正常」，变化历史里改记打不开和恢复的时间
+  const logUptime = (value) => {
+    m.history.unshift({ at: now, value, triggered: true });
+    m.history = m.history.slice(0, HISTORY_LIMIT);
+  };
   if (result.error) {
+    if (m.source === 'uptime' && !m.lastError) logUptime(`❌ 打不开：${result.error}`);
+    if (!m.lastError) m.errorSince = result.since || now;
     m.lastError = result.error;
     if (m.status !== 'updated') m.status = 'error';
   } else {
+    if (m.source === 'uptime' && m.lastError) logUptime('✅ 恢复正常');
     m.lastError = null;
+    m.errorSince = null;
     if (result.triggered) {
       m.status = 'updated';
       m.lastChangedAt = now;

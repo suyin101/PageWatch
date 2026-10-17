@@ -54,6 +54,7 @@ function fullTime(iso) {
 }
 
 function ruleText(m) {
+  if (m.source === 'uptime') return m.selector ? `网站打不开或找不到「${m.selector}」时` : '网站打不开时';
   const t = state.rules[m.rule] || '';
   return m.rule === 'gt' || m.rule === 'lt' ? t.replace('设定值', ` ${m.threshold}`) : t;
 }
@@ -197,7 +198,9 @@ function renderList() {
         value = '';
         if (cat === 'updated' && m.previousValue != null) value += `<div class="value old" title="${esc(m.previousValue)}">${esc(m.previousValue)}</div>`;
         const rawTitle = m.extract && m.lastRaw ? `原文：${m.lastRaw}` : m.lastValue;
-        value += `<div class="value" title="${esc(rawTitle)}">${esc(m.lastValue)}</div>`;
+        // 网站能否打开：显示响应速度；打不开时只显示原因，不再显示上次的「正常」
+        if (m.source === 'uptime') value += m.lastError ? '' : `<div class="value">${esc(m.lastRaw || m.lastValue)}</div>`;
+        else value += `<div class="value" title="${esc(rawTitle)}">${esc(m.lastValue)}</div>`;
         if (m.lastDownloadUrl) value += `<a class="dl-link" href="${esc(m.lastDownloadUrl)}" target="_blank" rel="noopener noreferrer">⬇ 下载</a>`;
         if (m.lastError) value += `<div class="err-text">⚠ ${esc(m.lastError)}</div>`;
       }
@@ -205,7 +208,7 @@ function renderList() {
       <div class="item ${cat} ${!m.enabled ? 'paused' : ''}" data-id="${m.id}">
         <div>
           <div class="title" data-act="detail"><span class="dot ${dot}"></span><span>${esc(m.name || '未命名')}</span>${cat === 'updated' ? '<em class="badge">有更新</em>' : ''}</div>
-          <a class="url" href="${esc(m.link || m.url)}" target="_blank" rel="noopener noreferrer">${m.source === 'api' ? '🔗 ' : ''}${esc(m.link || m.url)}</a>
+          <a class="url" href="${esc(m.link || m.url)}" target="_blank" rel="noopener noreferrer">${{ api: '🔗 ', uptime: '🩺 ' }[m.source] || ''}${esc(m.link || m.url)}</a>
           ${m.note ? `<div class="note">📝 ${esc(m.note)}</div>` : ''}
         </div>
         <div>${value}</div>
@@ -335,18 +338,22 @@ async function openDetail(id) {
     <dl class="kv">
       <dt>网址</dt><dd><a href="${esc(m.url)}" target="_blank" rel="noopener noreferrer">${esc(m.url)}</a></dd>
       ${m.source === 'api' ? `<dt>方式</dt><dd>接口数据</dd>${m.link ? `<dt>通知链接</dt><dd><a href="${esc(m.link)}" target="_blank" rel="noopener noreferrer">${esc(m.link)}</a></dd>` : ''}` : ''}
-      <dt>${m.source === 'api' ? '数据项' : '元素'}</dt><dd><code>${esc(m.selector)}</code>${m.attribute ? ` → 读取 <code>${esc(m.attribute)}</code>` : ''}</dd>
+      ${
+        m.source === 'uptime'
+          ? `<dt>方式</dt><dd>网站能否打开</dd>${m.selector ? `<dt>要有的文字</dt><dd>${esc(m.selector)}</dd>` : ''}${m.lastRaw && !m.lastError ? `<dt>状态</dt><dd>${esc(m.lastRaw)}</dd>` : ''}`
+          : `<dt>${m.source === 'api' ? '数据项' : '元素'}</dt><dd><code>${esc(m.selector)}</code>${m.attribute ? ` → 读取 <code>${esc(m.attribute)}</code>` : ''}</dd>`
+      }
       ${m.extract ? `<dt>只看</dt><dd>${esc(state.extractModes[m.extract])}${m.extract === 'regex' ? ` <code>${esc(m.extractPattern)}</code>` : ''}</dd>` : ''}
       ${m.extract && m.lastRaw ? `<dt>原文</dt><dd>${esc(m.lastRaw)}</dd>` : ''}
       ${m.lastDownloadUrl ? `<dt>下载链接</dt><dd><a href="${esc(m.lastDownloadUrl)}" target="_blank" rel="noopener noreferrer">${esc(m.lastDownloadUrl)}</a></dd>` : ''}
       <dt>规则</dt><dd>${esc(ruleText(m))}</dd>
       <dt>检查间隔</dt><dd>每 ${m.interval} 分钟${m.enabled ? '' : '（已暂停）'}</dd>
       <dt>上次检查</dt><dd>${fullTime(m.lastCheckedAt)}</dd>
-      <dt>上次更新</dt><dd>${fullTime(m.lastChangedAt)}</dd>
+      ${m.source === 'uptime' ? (m.errorSince ? `<dt>打不开自</dt><dd>${fullTime(m.errorSince)}</dd>` : '') : `<dt>上次更新</dt><dd>${fullTime(m.lastChangedAt)}</dd>`}
       ${m.lastError ? `<dt>错误</dt><dd class="err-text">${esc(m.lastError)}</dd>` : ''}
       ${m.note ? `<dt>备注</dt><dd>${esc(m.note)}</dd>` : ''}
     </dl>
-    <h3>变化历史（最近 50 条）</h3>
+    <h3>${m.source === 'uptime' ? '打不开 / 恢复记录' : '变化历史'}（最近 50 条）</h3>
     ${
       m.history.length
         ? `<ul class="history">${m.history
@@ -493,6 +500,11 @@ function openEditor(m) {
   state.navStack = [];
   state.warnedSameUrl = false;
   setSource(m?.source || 'page');
+  if (state.source === 'uptime') {
+    openModal('editor');
+    if (!m) $('#fUrl').focus();
+    return;
+  }
   if (state.source === 'api') {
     openModal('editor');
     if (m) loadApi();
@@ -548,6 +560,7 @@ function loadFrame(fresh = true, { keepPage = false } = {}) {
 // 接口数据：不开网页，直接读网站返回的 JSON 数据，取其中一项（selector 里存的是路径，比如 data.archive_count）
 const SOURCE_TEXT = {
   page: { btn: '加载网页', label: '监测的元素', ph: '粘贴要监测的网址，例如 https://www.blackmagicdesign.com/cn/products/davinciresolve', sel: '在左边网页上点击选择，或手动填写 CSS 选择器' },
+  uptime: { btn: '检查一下', label: '网页里应该有的文字（可选）', ph: '粘贴要监测的网站，例如 https://www.example.com', sel: '可以不填。填了的话，网页里找不到这段文字也算打不开（比如网站挂了显示的是报错页）' },
   api: { btn: '读取接口', label: '接口里的哪一项', ph: '粘贴接口网址（打开后是一堆 { } 数据的那种），例如 https://api.github.com/repos/obsproject/obs-studio/releases/latest', sel: '在左边点选一项，或手动填写，例如 data.archive_count' },
 };
 
@@ -555,13 +568,21 @@ function setSource(src) {
   state.source = src;
   const t = SOURCE_TEXT[src];
   $('.editor').classList.toggle('api', src === 'api');
+  $('.editor').classList.toggle('uptime', src === 'uptime');
   for (const b of $('#sourceSeg').children) b.classList.toggle('on', b.dataset.source === src);
   $('#btnLoad').textContent = t.btn;
   $('#selectorLabel').textContent = t.label;
   $('#fUrl').placeholder = t.ph;
   form.selector.placeholder = t.sel;
+  form.name.placeholder = src === 'uptime' ? '不填就用网站域名，例如：www.example.com 能否打开' : NAME_PH;
   $('#apiPane').classList.toggle('hidden', src !== 'api' || !state.apiFields);
-  if (src === 'api') {
+  if (src === 'uptime') {
+    $('#modeBar').classList.add('hidden');
+    frame.classList.add('hidden');
+    $('#frameLoading').classList.add('hidden');
+    $('#frameTip').classList.remove('hidden');
+    $('#frameTip').innerHTML = `<div class="big">① 粘贴网站地址，点「检查一下」</div><div>② 按设定的间隔定时访问，<b>打不开时通知你</b>（连不上、超时、报错、证书过期都算）</div><div>③ 网站恢复正常时也会通知你，并告诉你打不开了多久</div>`;
+  } else if (src === 'api') {
     $('#modeBar').classList.add('hidden');
     frame.classList.add('hidden');
     $('#frameLoading').classList.add('hidden');
@@ -579,6 +600,7 @@ function setSource(src) {
   showApiTip();
 }
 const FRAME_TIP = $('#frameTip').innerHTML;
+const NAME_PH = form.name.placeholder;
 
 $('#sourceSeg').addEventListener('click', (e) => {
   const src = e.target.closest('button')?.dataset.source;
@@ -588,6 +610,8 @@ $('#sourceSeg').addEventListener('click', (e) => {
   form.downloadSelector.value = '';
   setPreview('还没选择', false);
   state.apiFields = null;
+  // 网站能否打开适合查得勤一点，新建时默认 5 分钟
+  if (src === 'uptime' && !state.editingId && Number(form.interval.value) === (state.settings.defaultInterval || 30)) form.interval.value = 5;
   setSource(src);
 });
 
@@ -735,6 +759,7 @@ async function loadApi() {
 
 $('#urlForm').addEventListener('submit', (e) => {
   e.preventDefault();
+  if (state.source === 'uptime') return $('#btnTest').click();
   if (state.source === 'api') return loadApi();
   state.navStack = [];
   loadFrame();
@@ -744,6 +769,7 @@ $('#urlForm').addEventListener('submit', (e) => {
 $('#fUrl').addEventListener('paste', () =>
   setTimeout(() => {
     if (!/^https?:\/\/\S+$/i.test($('#fUrl').value.trim())) return;
+    if (state.source === 'uptime') return $('#btnTest').click();
     if (state.source === 'api') return loadApi();
     state.navStack = [];
     loadFrame();
@@ -947,11 +973,12 @@ $('#btnTest').addEventListener('click', async () => {
       $('#frameTip').classList.add('hidden');
     }
     showDownload(r.downloadUrl, { tried: true });
+    if (state.source === 'uptime') return setPreview(r.value, true, '✅ 网站能正常打开（直接访问网站，和定时检查一样）', 'ok');
     const how = state.source === 'api' ? '读取接口，和定时检查一样' : r.live ? '直接读取已打开的网页' : '重新打开网页读取，和定时检查一样';
     setPreview(r.value || '（内容为空）', !!r.value, `✅ 读取成功 · 用时 ${r.ms < 100 ? '不到 0.1' : (r.ms / 1000).toFixed(1)} 秒（${how}）`, 'ok');
   } catch (err) {
     stop();
-    setPreview('读取失败', false, '❌ ' + esc(err.message), 'err');
+    setPreview(state.source === 'uptime' ? '打不开' : '读取失败', false, '❌ ' + esc(err.message), 'err');
   } finally {
     btn.disabled = false;
     btn.textContent = '🔄 真实读取测试';
@@ -962,17 +989,25 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#formError').textContent = '';
   const isApi = state.source === 'api';
+  const isUptime = state.source === 'uptime';
+  const url = $('#fUrl').value.trim();
+  let name = form.name.value.trim();
+  if (!name && isUptime) {
+    try {
+      name = `${new URL(url).hostname} 能否打开`;
+    } catch {}
+  }
   const body = {
-    name: form.name.value.trim(),
+    name,
     source: state.source,
     link: isApi ? form.link.value.trim() : '',
-    url: $('#fUrl').value.trim(),
+    url,
     selector: form.selector.value.trim(),
-    attribute: isApi ? '' : form.attribute.value,
-    extract: form.extract.value,
+    attribute: isApi || isUptime ? '' : form.attribute.value,
+    extract: isUptime ? '' : form.extract.value,
     extractPattern: form.extractPattern.value.trim(),
-    downloadSelector: isApi ? '' : form.downloadSelector.value.trim(),
-    rule: form.rule.value,
+    downloadSelector: isApi || isUptime ? '' : form.downloadSelector.value.trim(),
+    rule: isUptime ? 'changed' : form.rule.value,
     threshold: form.threshold.value,
     interval: Number(form.interval.value),
     note: form.note.value.trim(),
@@ -1014,6 +1049,7 @@ $('#btnMonitorTestNotify').addEventListener('click', async () => {
       method: 'POST',
       body: {
         id: state.editingId,
+        source: state.source,
         name: form.name.value.trim(),
         url: (state.source === 'api' && form.link.value.trim()) || $('#fUrl').value.trim(),
         selector: form.selector.value.trim(),

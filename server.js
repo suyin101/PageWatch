@@ -17,6 +17,7 @@ const store = require('./src/store');
 const checker = require('./src/checker');
 const browser = require('./src/browser');
 const apiSource = require('./src/api');
+const { readUptime } = require('./src/uptime');
 const { notify, preview: previewTemplates, SAMPLE_EVENT } = require('./src/notify');
 const { RULES } = require('./src/rules');
 const tpl = require('./src/template');
@@ -177,8 +178,9 @@ function validate(body, partial) {
       throw new Error('网址格式不对，要以 http:// 或 https:// 开头');
     }
   }
-  if (body.source !== undefined && !['page', 'api'].includes(body.source)) throw new Error('未知的监测方式');
-  if ((!partial || body.selector !== undefined) && !String(body.selector || '').trim())
+  if (body.source !== undefined && !['page', 'api', 'uptime'].includes(body.source)) throw new Error('未知的监测方式');
+  // 网站能否打开：selector 是可选的「网页里必须有的文字」
+  if (body.source !== 'uptime' && (!partial || body.selector !== undefined) && !String(body.selector || '').trim())
     throw new Error(body.source === 'api' ? '请先在左边选择接口数据里的一项' : '请先选择一个网页元素');
   if (body.link) {
     try {
@@ -286,6 +288,11 @@ app.post(
   '/api/preview',
   wrap(async (req, res) => {
     const b = req.body;
+    if (b.source === 'uptime') {
+      validate(b, false);
+      const r = await readUptime(b.url, b.selector);
+      return res.json({ value: r.raw, ms: r.ms });
+    }
     if (b.source === 'api') {
       validate({ ...b, selector: b.selector || '-' }, false);
       const r = await apiSource.previewApi(b.url, b.selector);
@@ -330,6 +337,7 @@ app.post(
     const monitor = {
       id: b.id || 'test',
       name: `【测试】${b.name || '未命名监测'}`,
+      source: b.source || 'page',
       url: b.url || 'https://example.com',
       selector: b.selector || '',
       rule: b.rule || 'changed',
@@ -338,6 +346,10 @@ app.post(
       notifyFeishu: b.notifyFeishu !== false,
       notifyWebhook: b.notifyWebhook !== false,
     };
+    // 网站能否打开：模拟一次「打不开」的通知
+    if (monitor.source === 'uptime') {
+      return res.json({ results: await notify({ kind: 'error', monitor, error: '网站没有响应（这是一条测试通知，网站其实没问题）' }) });
+    }
     const downloadUrl = b.downloadUrl || saved?.lastDownloadUrl || null;
     const results = await notify({ kind: 'test', monitor, oldValue: value, newValue: fakeChange(value), downloadUrl });
     res.json({ results });

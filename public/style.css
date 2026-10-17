@@ -366,6 +366,7 @@ a.btn, label.btn { display: inline-block; text-decoration: none; margin: 0; font
 /* 监测方式：网页 / 接口数据 */
 .sourcebar { display: flex; align-items: center; gap: 10px; padding: 10px 12px 0; }
 .editor:not(.api) .api-only, .editor.api .page-only { display: none !important; }
+.editor.uptime .page-only, .editor.uptime .not-uptime { display: none !important; }
 .api-tip { margin: 0 12px 10px; }
 .api-pane { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--panel); color: var(--text); }
 .api-pane input { margin: 10px 12px; width: auto; }

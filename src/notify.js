@@ -37,8 +37,31 @@ function card(title, color, body, monitor, downloadUrl) {
 }
 
 // 按模板生成飞书卡片；settings 可以传入还没保存的模板，用来预览
+// 打不开了多久，比如「约 12 分钟」「约 2 小时 5 分钟」
+function lasted(since) {
+  const ms = Date.now() - new Date(since).getTime();
+  if (!since || Number.isNaN(ms)) return '';
+  const min = Math.max(1, Math.round(ms / 60_000));
+  return min < 60 ? `约 ${min} 分钟` : `约 ${Math.floor(min / 60)} 小时${min % 60 ? ` ${min % 60} 分钟` : ''}`;
+}
+
+const fmtTime = (t) => new Date(t).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+
 function feishuMessage(event, settings) {
   const { monitor } = event;
+  if (event.kind === 'recovered') {
+    const body = [
+      event.since ? `**打不开了：**${lasted(event.since)}（从 ${fmtTime(event.since)} 开始）` : '',
+      event.raw ? `**现在：**${event.raw}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    return card(`✅ 网站恢复正常：${monitor.name || monitor.url}`, 'green', body || '网站已经能正常打开了', monitor);
+  }
+  if (event.kind === 'error' && monitor.source === 'uptime') {
+    const body = [`**原因：**${event.error}`, `**网址：**${monitor.url}`, '恢复正常时会再通知你，期间不会重复提醒。'].join('\n');
+    return card(`🔴 网站打不开：${monitor.name || monitor.url}`, 'red', body, monitor);
+  }
   if (event.kind === 'error') {
     const body = [`**错误原因：**${event.error}`, `**规则：**${describe(monitor)}`, '网页打不开或元素找不到，可能需要重新选择元素。恢复正常之前不会重复提醒。']
       .join('\n');
@@ -51,14 +74,14 @@ function feishuMessage(event, settings) {
 
 function webhookMessage(event, settings) {
   const { monitor } = event;
-  if (settings.webhookTemplate && event.kind !== 'error') {
+  if (settings.webhookTemplate && !['error', 'recovered'].includes(event.kind)) {
     return tpl.renderJson(settings.webhookTemplate, tpl.variables(event, 'plain'));
   }
   // 默认格式：所有信息都给全，方便你自己的程序处理
   const vars = event.oldValue != null && event.newValue != null ? tpl.variables(event, 'plain') : null;
   return {
-    event: event.kind, // "updated" | "error" | "test"
-    monitor: { id: monitor.id, name: monitor.name, url: monitor.url, selector: monitor.selector, rule: monitor.rule, note: monitor.note },
+    event: event.kind, // "updated" | "error" | "recovered"（网站恢复正常）| "test"
+    monitor: { id: monitor.id, name: monitor.name, source: monitor.source || 'page', url: monitor.url, selector: monitor.selector, rule: monitor.rule, note: monitor.note },
     oldValue: event.oldValue ?? null,
     newValue: event.newValue ?? null,
     raw: event.raw ?? event.newValue ?? null,
@@ -66,6 +89,7 @@ function webhookMessage(event, settings) {
     changes: vars ? tpl.diff(event.oldValue, event.newValue).changes : [],
     summary: vars ? vars.变化 : null,
     error: event.error ?? null,
+    downSince: event.since ?? null,
     time: new Date().toISOString(),
   };
 }
